@@ -4,10 +4,8 @@
 #  
 #
 #  Created by Maria Jimenez Ramos on 15/01/2021.
-#  
-
-
-# Downloading reference genome and annotation
+#
+# Downloading reference genome and annotation to create genome index with STAR.
 
 cd ~/datasets/genome
 wget -O Homo_sapiens_genome.fa.gz ftp://ftp.ensembl.org/pub/release-102/fasta/homo_sapiens/dna/Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz
@@ -19,11 +17,11 @@ wget -O Homo_sapiens_annotation.gtf.gz ftp://ftp.ensembl.org/pub/release-102/gtf
 gunzip Homo_sapiens_annotation.gtf.gz
 cd ../
 
-#Create the genome indexes
+#Create the genome index
 
-~/star/code/STAR-2.7.7a/bin/Linux_x86_64/STAR --runThreadN 8 \ #number of cores
+~/star/code/STAR-2.7.7a/bin/Linux_x86_64/STAR --runThreadN 16 \ #number of cores
 --runMode genomeGenerate \
 --genomeDir ~/datasets/genome_index \
 --genomeFastaFiles ~/datasets/genome/Homo_sapiens_genome.fa \
 --sjdbGTFfile ~/datasets/annotation/Homo_sapiens_annotation.gtf \
---sjdbOverhang 99 # Determine with QC analysis.
+--sjdbOverhang 99 # Can be determined with QC analysis -sequence length that is indicated in basic statistics.
