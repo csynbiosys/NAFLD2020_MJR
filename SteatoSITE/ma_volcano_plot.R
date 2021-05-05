@@ -1,3 +1,5 @@
+library(ggplot2)
+
 ma_plot<- function(results_table, fc_threshold, fdr_threshold){
   results_table$significant <- 'no'
   results_table$significant[ results_table$FDR <= fdr_threshold ] <- 'yes'

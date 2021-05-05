@@ -1,3 +1,6 @@
+library(clusterProfiler)
+library(enrichplot)
+
 Pathway_analysis <- function(dir, type, fc_threshold){
   file <- read.csv(dir, row.names = 1)
   file <- subset(file, (file$FDR < 0.05))
@@ -19,11 +22,12 @@ Pathway_analysis <- function(dir, type, fc_threshold){
     p <- barplot(reactome_enrich)
     print(p)
     dev.off()
-    pdf(paste("./Pathways/Network_reactome", type, "enrich.pdf"), width = 30, height = 20)
+    ##The following part cannot be done for now as org.Hs.eg.db has some issues and cannot be used with R at the moment.
+    #pdf(paste("./Pathways/Network_reactome", type, "enrich.pdf"), width = 30, height = 20)
     #network <- setReadable(reactome_enrich, org.Hs.eg.db, "ENTREZID")  #This function transforms the entrez id into symbols for the networks. 
     #p <- cnetplot(network, foldChange = geneList, showCategory = 4)  #It creates a network with the top 4 pathways obtained and the genes that have been found from that pathway in the DEG list. Those genes will have different colour depending on the fold-change. 
     #print(p)
-    dev.off()
+    #dev.off()
   }
   
   go <- read.gmt("./c5.go.v7.3.entrez.gmt")  #gmt file that contains GO terms (CC, BP and MF).

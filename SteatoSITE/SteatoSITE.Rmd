@@ -1,0 +1,299 @@
+---
+title: "Untitled"
+author: "Maria Jimenez-Ramos"
+output: 
+  word_document:
+    toc: yes
+  html_notebook:
+    number_sections: yes
+    smart: no
+    theme: cosmo
+    toc: yes
+    toc_depth: 2
+    toc_float:
+      collapsed: no
+  html_document:
+    toc: yes
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.width = 7, fig.fullwidth =TRUE)
+```
+
+The working directory is set up and the libraries need are uploaded.
+```{r}
+setwd("~/Desktop/Google Drive/Documents/PhD/First year/Differential expression/SteatoSITE")
+library(edgeR)
+library(pheatmap)
+library(PCAtools)
+library(ggplot2)
+library(clusterProfiler)
+library(enrichplot)
+library(tidyverse)
+library(VennDiagram)
+library(RColorBrewer)
+library(rtracklayer)
+library(R.utils)
+library(GGally)
+```
+
+The information provided was a counts matrix, which contains the number of counts of each gene per sample, and the pathological metadata, which contains the histological information for each sample.
+
+The counts matrix csv file contains 714 samples and the genes are ensembl ID.
+
+The samples are named as "library_id_sample_id". This is because there are two samples that are technical replicates, in other words, multiple samples from the same patient in the same condition (have the same sample_id but different library_id). For simplicity, the library ID of each sample has been eliminated. Furthermore, some samples have an "_R" termination. This indicates that the library prep was repeated. The mean counts of these repeated samples are the final counts. As this is not relevant for the analysis, the samples are renamed to their original sample_id. 
+
+```{r}
+feature_counts <- read.csv("./featurecounts+coordsorted+gene_lib.csv", stringsAsFactors = FALSE, row.names = 1)
+names(feature_counts) <- as.character(str_sub(names(feature_counts), -4, -1)) #Eliminate library_id
+names(feature_counts) <- gsub("60_R", "1260", names(feature_counts)) #Change the termination
+names(feature_counts) <- gsub("62_R", "1262", names(feature_counts))
+names(feature_counts) <- gsub("82_R", "1282", names(feature_counts))
+names(feature_counts) <- gsub("21_R", "2021", names(feature_counts))
+names(feature_counts) <- gsub("32_R", "1232", names(feature_counts))
+names(feature_counts) <- gsub("18_R", "2018", names(feature_counts))
+names(feature_counts) <- gsub("20_R", "2020", names(feature_counts))
+head(feature_counts)
+```
+
+The pathological metadata csv file contains the following columns:
+  *Sample_id
+  *Hepatocyte_ballooning_score: from 0 to 2. It indicates the amount of ballooned cells (liver parenchymal death cells) found.
+  *Kleiner_Brunt_steatosis_score: from 0 to 3. Low to medium-power evaluation of parenchymal involvement by steatosis (accumulation of fatty acids).
+  *Lobular_inflammation_score: from 0 to 3. Overall assessment of all inﬂammatory foci.
+  *Modified_Ishak_score: from 0 to 6. It indicates how damaged the liver is by fibrosis.
+  *NASH.CRN_Kleiner_fibrosis_stage: from 0 to 4 (with 1 divided as 1a, 1b, 1c). It also indicates how damaged the liver is by fibrosis. 
+
+To match the samples ID of the pathological data and the counts, additional 0 were added in those patients that had less than 4 numbers (i.e. 1 is transformed into 0001). 
+
+Not all the histological samples were sequenced, hence we only take those samples that are present in `feature_counts`.
+
+The pathological metadata is modified: the rownames are changed to their sample_id, and a new column is added -one that combines fibrosis stages 1a, 1b and 1c into 1. This will be useful for some downstream analyses. Furthermore, not all the histological information provided is useful for our analyses, for this reason they are removed.
+
+```{r}
+pathological_data <- read.csv("./path_metadata.csv", header = TRUE, stringsAsFactors = FALSE)
+pathological_data$sample_id <- formatC(pathological_data$sample_id, flag = "0", width = 4) #Add additional 0.
+pathological_data <- pathological_data[pathological_data$sample_id %in% names(feature_counts),]
+pathological_data <- pathological_data %>% mutate(nash.crn_kleiner_fibrosis_combined = case_when(nash.crn_kleiner_fibrosis_stage == "1a" ~ "1", nash.crn_kleiner_fibrosis_stage == "1b" ~ "1", nash.crn_kleiner_fibrosis_stage == "1c" ~ "1", TRUE ~ nash.crn_kleiner_fibrosis_stage))
+pathological_data <- pathological_data[, !(names(pathological_data)== "saf_inflammation_score")]
+pathological_data <- pathological_data[, !(names(pathological_data)== "saf_steatosis")]
+pathological_data <- pathological_data[, !(names(pathological_data)== "histological_diagnosis_of_nash")]
+pathological_data <- pathological_data[, !(names(pathological_data)== "he_path")]
+pathological_data <- pathological_data[, !(names(pathological_data)== "psr_path")]
+pathological_data <- pathological_data[, !(names(pathological_data)== "saf_balloon_score")]
+names(pathological_data) <- c("sample_id", "hepatocyte_ballooning", "kleiner_brunt_steatosis", "lobular_inflammation", "modified_ishak_score", "kleiner_fibrosis", "kleiner_fibrosis_combined")#The columns are renamed.
+head(pathological_data,n = 9)
+```
+
+There are `nrow(pathological_data)` samples in the pathological metadata, and `ncol(feature_counts)` samples in the counts matrix. This is because the pathological metadata only contains the NAFLD-NASH spectrum, hence `ncol(feature_counts)-nrow(pathological_metadata)` samples, are controls. It is important to mention that the pathological metadata does contains some control samples, but they slipped in by mistake. Another thing to take into account, is that there are samples in the pathological metadata and counts matrix that do not come from the liver. For this reason, these samples are eliminated.
+
+```{r}
+not_in_pathological <- names(feature_counts)[!names(feature_counts) %in% pathological_data$sample_id]
+pathological_data <- add_row(pathological_data, sample_id = c(not_in_pathological), hepatocyte_ballooning = c(rep(0, times = length(not_in_pathological))), kleiner_brunt_steatosis = rep(0, times = length(not_in_pathological)), lobular_inflammation = rep(0, times = length(not_in_pathological)), modified_ishak_score = rep(0, times = length(not_in_pathological)), kleiner_fibrosis = rep("0", times = length(not_in_pathological)), kleiner_fibrosis_combined = rep("0", times = length(not_in_pathological))) #As they are control samples, the scores will always be 0.
+c("1122", "1135", "1202", "2205", "2279") %in% names(feature_counts) ##We look for the non-liver samples: 1122, 1202 and 2279 are present.
+```
+
+
+```{r}
+feature_counts <- feature_counts[, !(names(feature_counts) == "1122")]
+feature_counts <- feature_counts[, !(names(feature_counts) == "1202")]
+feature_counts <- feature_counts[, !(names(feature_counts) == "2279")]
+pathological_data <- pathological_data[!pathological_data$sample_id== "1122",]
+pathological_data <- pathological_data[!pathological_data$sample_id== "1202",]
+pathological_data <- pathological_data[!pathological_data$sample_id== "2279",]
+feature_counts <- feature_counts[, pathological_data$sample_id] # re-order the samples, so it matches the pathological data
+```
+
+The total number of samples that will be analysed are `ncol(feature_counts)`. 
+
+We build a dgList object that contains:
+
+  * `samples`: the metadata for the samples plus some data calculated by edgeR, i.e the total number of reads across all the genes in the sample (`lib.size`), and the scaling factor by which the `lib.size` will be multiplied by to get the `effective library size` ('norm.factors'), which is set at 1 at the moment. There is another column, `group`, which is always a factor, and should correspond to the column containing the most important piece of information about the samples. In our case, will be the fibrosis score of the samples.
+  * `counts`: the read counts mapped to each gene for each of the `ncol(feature_counts)` samples.
+
+```{r}
+dgList_raw <- DGEList(feature_counts, 
+                  genes = rownames(feature_counts), 
+                  samples = pathological_data, 
+                  group = pathological_data$kleiner_fibrosis_combined)
+head(dgList_raw$samples)
+```
+
+First, we are going to normalised the samples and create a MDS plot to see if the technical replicates (those samples that have the same sample_id) cluster together or not. 
+
+It's common to apply a normalisation factor to each sample which adjusts the observed count values for each sample by the overall level of sequencing undertaken in each sample. We'll be using the `trimmed median of M values` or TMM method. TMM calculates a scaling factor for each sample based on fold changes between samples while excluding the effects of genes that are highly expressed or show extreme changes in expression between samples. 
+
+```{r}
+dgList_unfiltered <- calcNormFactors(dgList_raw)
+head(dgList$samples)
+```
+
+With the normalised counts, we perform an MDS plot, a function provided by edgeR that we can use to check how the data is structured.
+
+```{r}
+plotMDS(
+  dgList_unfiltered,
+  gene.selection = 'pairwise',
+  col = as.integer(as.factor(dgList$samples$modified_ishak_score)), # specifics the sample attribute that will colour the points
+)
+```
+
+The technical replicates we have are clustered together and we've verified that they have near-identical expression patterns. For this reason, we need to sum those by patient and condition as per our `sample_id` variable. This will prevent the low variance between technical replicates from biasing downstream analysis. Moreover, we can observe several samples that are separated from the rest of the data, which might be outliers (i.e. low numbers of reads).
+
+We have to specify a vector of IDs with a length equal to the number of samples. Samples with the same IDs will be merged. Here we are using the `sample_id` column in the samples table.
+
+```{r}
+dgList_unsummed <- dgList_raw
+dgList_unfiltered <- sumTechReps(dgList_raw, ID = dgList_raw$samples$sample_id) 
+```
+
+
+Next, we are going to eliminate those samples that has a small `lib.size`. Those samples that have less than 1000000 counts in total are going to be considered outliers. As we can observe in the MDS plot, the majority of the samples that have a small `lib.size` are on the right of the graph, quite distant from the rest of the samples. 
+
+```{r}
+outliers <- c("1071", "1211", "1215", "1216", "1220", "1221", "1223", "1225", "1257", "1281", "1407", "1410", "1412", "1414", "1631", "1642")
+rownames(dgList_unfiltered$samples) <- dgList_unfiltered$samples$sample_id
+dgList_unfiltered <- dgList_unfiltered[, which(!rownames(dgList_unfiltered$samples) %in% outliers)]
+dim(dgList_unfiltered)
+```
+
+
+At the end, we are going to work with `ncol(dgList_unfiltered)` samples.
+
+We create a boxplot with the raw samples (and later with the filtered and normalised data too). This is good for QC of the samples.
+
+```{r, fig.width = 7, fig.fullwidth=TRUE}
+log_raw_counts <- log2(dgList_unfiltered$counts + 1)
+boxplot(log_raw_counts, main = "", xlab = "", ylab = "Raw read counts per gene (log2)", axes = FALSE)
+axis(2)
+axis(1,  at=c(1:length(rownames(dgList_unfiltered$samples))),labels=colnames(dgList_unfiltered$counts),las = 2,cex.axis = 0.6)
+
+```
+
+## Filter the data
+
+The approach recommended by edgeR, that we'll be using here, is to apply a counts-per-million (CPM) threshold, requiring expression in number of samples close to the smallest group size. That way we allow expression in a single group to cause retention of a gene row, but we haven't imposed any assumptions of expression-per-group.
+Using a CPM threshold reduces biases resulting from different library sizes.
+
+The first thing we need to know is the smallest group in the pathological data. This will be used as part of the filtering.
+
+```{r}
+table(dgList$samples %>% pull(kleiner_fibrosis))
+table(dgList$samples %>% pull(hepatocyte_ballooning))
+table(dgList$samples %>% pull(lobular_inflammation))
+table(dgList$samples %>% pull(kleiner_brunt_steatosis))
+table(dgList$samples %>% pull(modified_ishak_score))
+```
+
+The smallest group is `kleiner_fibrosis` with `sum(dgList$samples$kleiner_fibrosis == "1b")`. For this reason, we are going to filter out those genes that do not have at least one count in at least 13 samples.
+
+```{r}
+keep <- rowSums(cpm(dgList_unfiltered) > 1) >= 13
+summary(keep) #28474
+dgList <- dgList_unfiltered[keep, ]
+
+```
+
+We create another boxplot, this time with the filtered counts.
+
+```{r}
+log_filtered <- log2(dgList$counts +1)
+boxplot(log_filtered, main = "", xlab = "", ylab = "Filtered read counts per gene (log2)", axes = FALSE)
+axis(2)
+axis(1,  at=c(1:length(rownames(dgList$samples))),labels=colnames(dgList$counts),las=2,cex.axis=0.6)
+
+```
+
+We normalise again the dgList and create boxplot with the normalised data. This time, due to the `norm.factors` the counts will be log2 cpm counts, so the effective library is taken into account (if we do not use the cpm counts, the boxplot obtained will be identical to the filtered samples, as the effective library is not used).
+
+```{r}
+dgList <- calcNormFactors(dgList)
+log_cpm_normalised <- cpm(dgList$counts, log = TRUE, prior.count = 1)
+boxplot(log_cpm_normalised, main = "", xlab = "", ylab = "Filtered read counts per gene (log2)", axes = FALSE)
+axis(2)
+axis(1,  at=c(1:length(rownames(dgList$samples))),labels=colnames(dgList$counts),las=2,cex.axis=0.6)
+
+```
+
+To determine any possible batch/blocking effects, as well as the variability of the data, we can perform PCA plots and study the correlation between the covariates.
+
+```{r}
+pathological_data <- pathological_data[pathological_data$sample_id %in% rownames(dgList$samples), ]
+pathological_data_copy <- pathological_data
+pathological_data_copy$kleiner_fibrosis <-  as.numeric(as.factor(pathological_data_copy$kleiner_fibrosis))
+cor(pathological_data_copy[,2:6], method = "spearman")
+ggcorr(pathological_data_copy[,2:6], method = c('pairwise', 'spearman'), label_size = 4, label = TRUE)
+```
+As expected, covariates like `modified_ishak` and `kleiner_fibrosis` have a strong correlation. This makes sense as they are both measuring fibrosis. We can see that there is a strong correlation too between `kleiner_brunt_fibrosis` and `hepatocy_ballooning` too.
+
+The PCA can be run on the raw count data, however it is better to use the counts per million (CPM), so the varying read depth between samples does not effect the analysis.
+
+The object `PCA` now contains the count data and metadata provided as arguments to the `pca()` function, and the results of the PCA analysis.
+
+```{r}
+dgList$samples$hepatocyte_ballooning <- as.character(dgList$samples$hepatocyte_ballooning)
+dgList$samples$kleiner_brunt_steatosis <- as.character(dgList$samples$kleiner_brunt_steatosis)
+dgList$samples$lobular_inflammation <- as.character(dgList$samples$lobular_inflammation)
+dgList$samples$modified_ishak_score <- as.character(dgList$samples$modified_ishak_score)
+PCA <- pca(log_cpm_normalised, metadata = dgList$samples)
+screeplot(PCA)
+for (i in names(PCA$metadata[5:ncol(PCA$metadata)])){
+  p <- biplot(pcaobj = PCA, x = "PC1", y = "PC2", colby = i, title= "Biplot of the logCPM", legendPosition = "bottom", lab = NULL)
+  print(p)
+  p<- biplot(pcaobj = PCA, x = "PC2", y = "PC3", colby = i, title= "Biplot of the logCPM", legendPosition = "bottom", lab = NULL)
+  print(p)
+}
+```
+
+There is a 12.79% variation in PC1, 8.01% variation in PC2 and 3.09% variation in PC3. As we can see, the variation of the data is strong and there is no clear batch effect. The fibrosis category however are spreaded according to their score through the biplot, indicating that the main component that induces the development of the disease is the fibrosis, which is what it is believed.
+
+We also correlate principal components to the continuous variable metadata and test significances of these. This will explain how the different values of categorical variables are associated with large changes in the data. These values are expected to be signficant for early components responsible for large proportions of variance.
+
+```{r}
+eigencorplot(PCA, components = getComponents(PCA, 1:5), metavars = c("hepatocyte_ballooning", "kleiner_brunt_steatosis", "lobular_inflammation", "modified_ishak_score", "kleiner_fibrosis"))
+```
+We create a data frame with different colours for each score/stage of the condition we want to observe. This will be useful for plots.
+
+```{r}
+annotcolIshak <- brewer.pal(7, "Paired")
+names(annotcolIshak) <- c("0","1","2","3","4","5","6")
+annotcolfibrosis <- brewer.pal(7, "Set2")
+names(annotcolfibrosis) <- c("0", "1a", "1b", "1c", "2", "3", "4")
+annotcolsteatosis <- brewer.pal(4, "Oranges")
+names(annotcolsteatosis) <- c("0","1","2","3")
+annotcolLI <- brewer.pal(4, "Purples")
+names(annotcolLI) <- c("0","1","2","3")
+annotcolHB <- brewer.pal(3, "Greys")
+names(annotcolHB) <- c("0","1","2")
+annotCol <- list("kleiner_fibrosis" = annotcolfibrosis, "modified_ishak_score" = annotcolIshak, "kleiner_brunt_steatosis" = annotcolsteatosis, "lobular_inflammation" = annotcolLI, "hepatocyte_ballooning" = annotcolHB)
+```
+
+We create an unsupervised clustering of the samples with the normalised log counts. For this, the euclidean measure and the hierarchical clustering with the complete linkage methods (standard methods indicated by the functions), have been used.
+
+```{r}
+sampleDists <- dist(t(log_cpm_normalised))
+sampleDistMatrix <- as.matrix(sampleDists)
+dataframe <- data.frame(row.names = c(colnames(log_cpm_normalised)))
+rownames(sampleDistMatrix) <- rownames(dataframe)
+colnames(sampleDistMatrix) <- rownames(dataframe)
+plot(hclust(sampleDists))
+pheatmap(sampleDistMatrix, clustering_distance_rows = sampleDists, clustering_distance_cols = sampleDists, show_rownames = FALSE, show_colnames = FALSE, annotation_col = dgList$samples[6:ncol(dgList$samples)-1], annotation_color = annotCol, border_color = NA)
+
+```
+
+We create an initial pheatmap with the top 50 most expressed genes according to the mean number of the log2 transformed normalised counts. 
+
+```{r}
+rownames(log_cpm_normalised) <- dgList$genes[,1]
+select <- order(rowMeans(log_cpm_normalised), decreasing =TRUE)[1:50]
+highexprgenes_counts <- log_cpm_normalised[select,] #Create a data frame with the scores of the pathological data.
+gene_symbols <- read.csv("./Gene_symbols_ensembl.csv", row.names = 1)
+symbols <- gene_symbols[,2]
+names(symbols) <- gene_symbols[,1]
+symbols_1 <- symbols[rownames(highexprgenes_counts)]
+rownames(highexprgenes_counts) <- paste(rownames(highexprgenes_counts), symbols_1, sep = "-")
+rownames(highexprgenes_counts)[rownames(highexprgenes_counts) == "ENSG00000277048-NA"] <- "ENSG00000277048-AL353644.10"  #This gene was mislabelled by the Ensembl database, for this reason, it has been manually modified.
+pheatmap(highexprgenes_counts, legend = FALSE, annotation_col = dgList$samples[6:ncol(dgList$samples)], scale = "row", border_color = NA, clustering_distance_rows = "correlation", show_colnames = FALSE, annotation_colors = annotCol)
+```
