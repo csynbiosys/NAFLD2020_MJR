@@ -1,0 +1,1326 @@
+---
+title: "Drug repurposing"
+author: "Maria Jimenez-Ramos"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.width = 7, fig.fullwidth =TRUE)
+```
+
+```{r}
+library(fastmatch)
+library(cmapR)
+library(apcluster)
+library(ggplot2)
+library(ppclust)
+library(factoextra)
+library(fclust)
+library(ggplot2)
+library(pheatmap)
+```
+
+We read the gctx file that contains the MODZ (Moderated Z Scores- weighted average of replicates, where weighting is proportional to the Spearman correlation between replicates)- replicate collapse z-score vectors. This file is going to contain the gene signatures of the drugs. 
+
+We also read the siginfo.txt file that contains all the information regarding each instance.
+
+First, we are going to do an exploratory analysis to observe the different information we have available in CMap2020. 
+
+```{r}
+ds_path <- '/Users/mariajimenezramos/Desktop/Google Drive/Documents/PhD/First year/Drug repurposed/Data/level5_beta_trt_cp_n720216x12328.gctx'
+siginfo_matrix <- data.table::fread('/Users/mariajimenezramos/Desktop/Google Drive/Documents/PhD/First year/Drug repurposed/Data/siginfo_beta.txt')
+geneinfo_matrix <- data.table::fread('/Users/mariajimenezramos/Desktop/Google Drive/Documents/PhD/First year/Drug repurposed/Data/geneinfo_beta.txt')
+compoundinfo_matrix <- data.table::fread('/Users/mariajimenezramos/Desktop/Google Drive/Documents/PhD/First year/Drug repurposed/Data/compoundinfo_beta.txt')
+
+pert_type <- ggplot(siginfo_matrix, aes(pert_type))+
+  geom_bar(fill = 'cornflowerblue') + 
+  labs(x = 'Pertubation types', y = 'Counts')+
+  theme_bw()
+
+##pert_nsamples <- ggplot(siginfo_matrix, aes(nsample)) +
+  #geom_bar(fill = 'cornflowerblue') + 
+  #labs(x = 'No of replications', y  = 'No of pertubations', title = 'No of replications per perturbation') + 
+  #theme_bw()
+
+cp_nsamples <- ggplot(siginfo_matrix[siginfo_matrix$pert_type == 'trt_cp'], aes(siginfo_matrix[siginfo_matrix$pert_type == 'trt_cp']$nsample)) +
+  geom_bar(fill = 'cornflowerblue') + 
+  labs(x = 'No of replications', y  = 'No of compounds', title = 'No of replicates per compound') + 
+  theme_bw() ##36 is the biggest one
+
+
+cp_countcells_info <- data.frame(siginfo_matrix[siginfo_matrix$pert_type == 'trt_cp']$cmap_name, siginfo_matrix[siginfo_matrix$pert_type == 'trt_cp']$cell_iname, row.names = NULL) 
+cp_countcells_info <- lapply(unique(cp_countcells_info), table) 
+df_countcells <- as.data.frame(cp_countcells_info$siginfo_matrix.siginfo_matrix.pert_type.....trt_cp...cmap_name) #Convert the list into a data frame to create the plot (ggplot2 only accepts data frames)
+cp_countcells <- ggplot(df_countcells, aes(Freq)) +
+  geom_bar(fill = 'cornflowerblue') +
+  labs(x = 'No of cell lines', y = 'No of compounds', title = 'No of cell lines per compound')+
+  theme_bw()
+
+cp_dose_info <- data.frame(siginfo_matrix[siginfo_matrix$pert_type == 'trt_cp']$cmap_name, siginfo_matrix[siginfo_matrix$pert_type == 'trt_cp']$pert_idose, row.names = NULL) #There are 43 different concentrations
+cp_dose_info <- lapply(unique(cp_dose_info), table)
+df_dose <- as.data.frame(cp_dose_info$siginfo_matrix.siginfo_matrix.pert_type.....trt_cp...cmap_name)
+cp_dose <- ggplot(df_dose, aes(Freq)) +
+  geom_bar(fill = 'cornflowerblue') +
+  labs(x = 'No of concentration', y = 'No of compounds', title = 'No of concentrations per compound') +
+  theme_bw()
+
+cp_length_info <- data.frame(siginfo_matrix[siginfo_matrix$pert_type == 'trt_cp']$cmap_name, siginfo_matrix[siginfo_matrix$pert_type == 'trt_cp']$pert_itime, row.names = NULL)  #Durations of treatments = 24 h 3 h 48 h 6 h
+cp_length_info <- lapply(unique(cp_length_info), table)
+df_length <- as.data.frame(cp_length_info$siginfo_matrix.siginfo_matrix.pert_type.....trt_cp...cmap_name)
+cp_length <- ggplot(df_length, aes(Freq)) +
+  geom_bar(fill = 'cornflowerblue') +
+  labs(x= 'Treatment length', y = 'No of compounds', title = 'Treatment length per compound') + 
+  theme_bw()
+
+moa_info <- data.frame(compoundinfo_matrix$cmap_name, compoundinfo_matrix$moa, row.names = NULL)
+moa_info <- lapply(unique(moa_info),table)
+df_moa <- as.data.frame(moa_info$compoundinfo_matrix.moa)
+nrow(moa_info$compoundinfo_matrix.moa) #There are 658 moa in the matrix
+```
+
+The drug matrix containing their gene signatures need to be ranked in descending order first.
+
+```{r}
+siginfo_matrix <- siginfo_matrix[which(siginfo_matrix$pert_type == 'trt_cp')] #We select only those perturbations that are compounds.
+drug_gctx <- parse_gctx(ds_path, cid = siginfo_matrix$sig_id)
+drug_matrix <- mat(drug_gctx)
+rank_matrix <- apply(-drug_matrix, 2, rank, ties.method = 'first')
+for (drug in unique(siginfo_matrix$pert_iname)){
+  drug_instances <- siginfo_matrix$sig_id[which(siginfo_matrix$pert_iname==drug)] # These are the signature id that is present in the final drug matrix with all the information per drug.
+  if(length(drug_instances)>1){
+  drug_GEPs <- rank_matrix[,drug_instances]
+  }else {
+  name <- siginfo_matrix$sig_id[siginfo_matrix$sig_id%in%drug_instances]
+  drug_GEPs <- data.frame(rank_matrix[,drug_instances],row.names=rownames(drug_matrix))
+  colnames(drug_GEPs) <- name
+  }
+  write.table(drug_GEPs, file=paste('GEPs of each drug/', drug , '.out' ,sep=''), row.names=TRUE,col.names=TRUE)
+}
+```
+
+
+**Step 1.Spearman's Footrule** 
+
+First we create a function to calculate the distance between two ranked lists by using Spearman's Footrule. 
+
+This function will take the ranked matrix obtained from the Clue.io database and select to columns, i and j, which would correspond to the gene expression profile (GEP) of two different drugs. The absolute distance of these two drugs will be calculated and the final result would correspond to its sum.  
+
+The function is vectorized by `Vectorize` for further analyses.
+
+```{r}
+SpearmansFootrule_ij<-function(i,j,rank_matrix){
+  dist=sum(abs(drug_info[,i]-drug_info[,j]))
+  return(dist)
+}
+SpearmansFootrule <- Vectorize(SpearmansFootrule_ij,vectorize.args=list("i","j"))
+```
+
+**Step 2. Borda Merging Function** 
+
+The closer two ranked lists will be merged, by this function. The two lists are summed and its result is ranked and returned. 
+
+```{r}
+BordaMergingFunction=function(GEPa,GEPb){
+  ps=GEPa+GEPb
+  mergedGEP=rank(ps,ties.method="first") # In case of ties, the gene that is first (following an alphanumeric order), Iorio used the same.
+  return(mergedGEP)
+}
+```
+
+**Step 3. Kruskal Algorithm** 
+
+To obtained the final single list for each drug where all the cell lines, doses and hours of treatments are combined, we perform the Kruskal algorithm.
+
+We create a function for this, in which the input is the GEP lists that belong to the same drug that will be merged. The function first create an array that contains the distance of the every pair of GEPs according to the Spearman's Footrule. Then the minimum distance in the array is obtained and the drugs that belong to that distance (which would be column i and j in the ranked matrix) will be merged according to the Borda Merging function. The list of GEPs is modified so the two lists merged are substituted by the merged one. 
+
+This step is done until the a single list is obtained.
+
+```{r}
+Kruskal_algorithm <- function(GEPs){
+  n <- length(GEPs)
+  while (n>1){
+    dist <- outer(1:3,1:3, FUN = SpearmansFootrule, drug_info)
+    min_drug <- min(dist[upper.tri(dist)]) # the diagonal is always zero and distance is symmetrical
+    i <- which(dist == min_drug, arr.ind = TRUE)[[1,1]]   #arr.ind is to return x if it is array
+    j <- which(dist == min_drug, arr.ind = TRUE)[[1,2]]
+    y <- BordaMergingFunction(drug_info[,i],drug_info[,j])
+    drug_info[,i] <- NULL
+    drug_info[,j] <- NULL
+    GEPs <- cbind(drug_info,y)
+    n <- length(GEPs)
+  }
+  
+  #The final PLR list is rearranged.
+  GEPs$genes <- rownames(GEPs)
+  GEPs <- GEPs[order(GEPs[,1]),]
+  GEPs[,1] <- NULL
+  rownames(GEPs) <- NULL
+  return(GEPs)
+}
+```
+
+**Step 4. Obtain final PRL list** 
+
+For this, we first retrieve the information of the specific drug that we want to obtain the PRL list. Then, we perform the Kruskal Algorithm function. 
+
+
+```{r}
+generatePRL<- function(drug){
+  drug_info <- read.table(paste('GEPs of each drug/', drug, '.out', sep = ''), header = TRUE)
+  PRL <- Kruskal_algorithm(drug_info)
+  drug=gsub(" ", "_", drug)
+  colnames(PRL)=drug
+  return(PRL)
+}
+```
+
+**Step 5. PRL matrix**
+
+The final step is to create the final PRL matrix with all the PRL lists obtained for each drug.
+Each PRL is a column with rownames as ranks, and column name as name of the drug.
+
+```{r}
+buildPRLMatrix <- function(drugs){
+  PRLs=data.frame(matrix(NA, nrow = 10174, ncol = 0))
+  for (drug in drugs){
+    PRL=generatePRL(drug)
+    PRLs=cbind(PRLs,PRL)
+  }
+  PRLs=PRLs[ , order(colnames(PRLs))]
+  return(PRLs)
+}
+
+PRLs <- buildPRLMatrix(unique(siginfo_matrix$pert_iname))
+write.table(PRLs,"./DrugPRLs.txt")
+```
+
+The PRLs will contain the gene signature ID according to CMap. This will allow the input to be Ensembl ID or Gene Symbol, having more freedom in the disease signature.
+
+Once we have all the PRLs, we can create a function to retrieve a signature for a specific drug (`PRLa`). Iorio et al. decided that the optimal number of genes were 250, but this can be modified in a future to determine if there is a better number.  
+
+```{r}
+retrieveSignature <- function(PRLa){
+  top250 <- PRLa[1:250]
+  len <- length(PRLa)
+  bottom250 <- PRLa[(len-249):len]
+  signature <- list("Top"= top250,"Bottom"= bottom250)
+  return(signature)
+}
+```
+
+Then the Enrichment Score (ES) is calculated, a measure based on the Kolmogorov-Smirnov statistics, which can determine how much a set of genes is at the top of the list. It ranges from -1 to 1, the closer to 1 the closer the genes are to the top of the list; the closer to -1, the closer the genes are to the bottom of the list. Hence, if we would like to look for a possible treatment, the signature we retrieve would have to be the closer to -1.
+
+The function will take to inputs:
+*`input_sig`: A vector with the gene signature that is used as input. 
+*`PRL`: The PRL that is compared with the gene signature, with genes ordered by their rankings.
+
+```{r}
+ES <- function(input_sig,PRL){
+  NH <- length(input_sig)
+  N <- length(PRL)
+  NR <- length(intersect(as.character(input_sig), as.character(PRL)))
+  hits <- PRL%fin%input_sig     #Factors, raw vectors and lists are converted to character vectors, and then x and table are coerced to a common type (the later of the two types in R's ordering, logical < integer < numeric < complex < character) before matching
+  hitCases <- cumsum(hits)
+  missCases <- cumsum(1-hits)
+  Phit <- hitCases/NR
+  Pmiss <- missCases/(N-NH)
+  dif <- Phit-Pmiss
+  ES <- dif[which.max(abs(dif))]
+  return(ES)
+}
+```
+
+Once the ES is obtained, the Inverse Total Enrichment Score (TES) is calculated and determines how many genes from the bottom are placed at the bottom and viceversa.
+
+This function takes as input the ES from the top and bottom of the signature: `ES_top` and `ES_bottom`.
+
+```{r}
+TES <- function(ES_top, ES_bottom){
+  TES <- 1 - (ES_top - ES_bottom)/2
+  return(TES)
+}
+```
+
+Iorio et al. decided to use the Maximum Enrichement Score as distance measure as it was most case sensitive to weak similarities. For this reason, this is the measure that is going to be used in here too.
+
+```{r}
+maxESdist <- function(TESa, TESb){
+  D <- min(c(TESa, TESb))
+  return(D)
+}
+```
+
+Once the basic functions are designed, we can design the final function that will compute the final distance between the signatures.
+
+```{r}
+computeDist <- function(PRLa,PRLb){
+  sigA <- retrieveSignature(PRLa)
+  sigB <- retrieveSignature(PRLb)
+  EStopA <- ES(sigA[[1]],PRLb)
+  ESbottomA <- ES(sigA[[2]],PRLb)
+  EStopB <- ES(sigB[[1]],PRLa)
+  ESbottomB <- ES(sigB[[2]],PRLa)
+  
+  TESa <- TES(EStopA,ESbottomA)
+  TESb <- TES(EStopB,ESbottomB)
+  dist <- maxESdist(TESa,TESb)
+  
+  return(dist)
+}
+```
+
+Finally, we create a distance matrix built with the PRLs.
+
+```{r}
+buildDistMatrix <- function(PRLs){
+  ncores <- detectCores() - 1
+  cl<- makeCluster(ncores) #TEST IF IT WORKS GOOD LIKE THIS
+  clusterEvalQ(cl, library(fastmatch))
+  clusterExport(cl=cl,varlist=c("retrieveSignature", "ES", "TES", "maxESDist","computeDist"))
+  
+  combin <- combn(ncol(PRLs),2)
+  distances <-  parApply(cl,combin,2,function(x){
+    round(computeDist(PRLs[,x[1]],PRLs[,x[2]]),5)
+    })
+  n <- length(PRLs)
+  distances_mat <- matrix(ncol=n,nrow=n)
+  distances_mat[,] <- 0
+  for( i in 1:length(combin[1,])){
+    a <- combin[1,i] 
+    b <- combin[2,i]
+    distances_mat[a,b] = distances_mat[b,a] = distances[i]
+  }
+  
+  rownames(distances_mat) <- colnames(PRLs)
+  colnames(distances_mat) <- colnames(PRLs)
+  stopCluster(cl)
+  return(distances_mat)
+}
+
+distmat <- buildDistMatrix(PRLs)
+write.table(distmat, './Distance_matrix.txt', sep = '\t')
+```
+
+We need to create a new significance threshold to determine which is the optimal distance that a drug can have to belong in a specific community. As Iorio et al. did, we will use the empirical probability distribution (pdf) and select its upper 5% quantile as the threshold. 
+
+```{r}
+dist_vector <- as.vector(distmat)
+sig_threshold <- quantile(dist_vector, probs = 0.05)
+```
+
+With this threshold we can create a function that allow us to remove those drugs that do not pass this threshold if necessary. 
+
+```{r}
+remove_column <- function(column){
+  if (length(which(column < sig_threshold))==1){
+    return(TRUE) 
+  }else { return(FALSE)}
+}
+
+filteredCommunities <- function(drug_communities,distmat){ #drug_communities- data frame that contains two columns, one for communities ID -obtained through the clusters- and the other for the drugs.
+  DrugsToRemove <- vector()
+  for (i in 1:length(unique(drug_communities$Community_ID))){
+    drugs <- as.character(drug_communities$Drugs[which(drug_communities$Community_ID==i)])
+    if (length(drugs)>1){
+      Com_Matrix <- distmat[which(rownames(distmat)%in%drugs),which(colnames(distmat)%in%drugs)]
+      Drugs <- apply(Com_Matrix, 2, removecol)
+      DrugsToRemove <- c(DrugsToRemove,names(which(Drugs==TRUE)))
+    }
+    else{DrugsToRemove <- c(DrugsToRemove,drugs)}
+  }
+  return(drug_communities[which(!drug_communities$Drugs%in%DrugsToRemove),])
+}
+```
+
+**Step 6. Drug communities**
+
+Iorio et al. used the affinity propagation (AP) algorithm to identify the communities. Barbara also used another algorithms to determine if there is a better approach for this. For this reason, we will use all these clustering algorithms plus some additional ones. To validate the cluster algorithms we will be using both internal and external measures. It is believed that when clustering biological data, due to the noise, the internal measures are not suitable enough. However, the Silhouette Width and the Dunn Index will be measured along with the Adjusted Rand Index (ARI) -an external measure- for cluster validation. We will start by creating an AP cluster with the drug distances, just like Iorio et al. did.
+
+The Affinity Propagation clustering consider specific data as exemplars. Through iteration, high-quality exemplars emerge by real-valued messages that can be exchanged through data points. The algorithm proceeds by alternating between two message-passing steps, which update two matrices:
+*The responsibility matrix R has values r(i, k) that quantify how well-suited x_k is to serve as the exemplar for x_i, relative to other candidate exemplars for x_i.
+*The availability matrix A contains values a(i, k) that represent how "appropriate" it would be for x_i to pick x_k as its exemplar, taking into account other points' preference for x_k as an exemplar.
+
+The iterations take place until the cluster boundaries do not change over a specific number of iterations, or if a specific number of iterations previously determined is reached. The exemplars are chonse from the final matrices when responsibility + availability for  for themselves is positive.
+
+```{r}
+AP_communities_official <- function(distmat){
+  ap_result <- apcluster(1-distmat,details=TRUE,seed=10) #In this case a similarity matrix is needed. Since distmat is measures the distance between the drugs (the farther away, the most different), to obtain the similarity matrix we need to do 1-distmat.
+  AP_communities <- data.frame(Community_ID = 1:length(colnames(distmat)), Drugs = colnames(distmat))
+  for (i in 1:length(ap_result@clusters)){
+    AP_communities$Community_ID[which(AP_communities$Drugs%in%names(ap_res@clusters[[i]]))] <- i
+  }
+  vect <- as.vector(AP_communities$Community_ID)
+  names(vect) <- AP_communities$Drugs
+  stats <- cluster.stats(as.dist(1-distmat), vect)
+  return(AP_communities, stats$avg.silwidth,stats$dunn)
+}
+
+AP_communities_official(distmat)
+```
+
+**Step 6. Sensitivity analysis**
+
+As external validation and enrichment analysis, we need to provide biological information that can be used to compare the clusters obtained with these. For this, we will use ATC codes and MoA, which will be retrieved from DrugBank, BioPortal and CMap2020.
+
+```{r}
+bioportal <- read.csv('/Users/mariajimenezramos/Desktop/Google Drive/Documents/PhD/First year/Drug repurposed/ATC.csv')
+bioportal$Class.ID <- gsub('http://purl.bioontology.org/ontology/UATC/', '', bioportal$Class.ID)
+bioportal <- bioportal[nchar(bioportal$Class.ID) == 7, ] #We only keep those ATC codes that have 7 characters, which belong to level 5
+bioportal_atc <- bioportal[bioportal$Preferred.Label%in%siginfo_matrix$pert_iname, ] 
+##Include code from DrugBank
+```
+
+The MoA are registered for several compounds in CMap2020. For this, we will extract the MoA and drug target for every compound and reduce the list so only unique drugs are present.
+
+```{r}
+Drug_Targets <- data.frame('Drug' = compoundinfo_matrix$cmap_name, 'MoA' = compoundinfo_matrix$moa, 'Drug Target' = compoundinfo_matrix$target)
+Drug_Targets <- Drug_Targets[which(Drug_Targets$MoA != ''),]
+Drug_Targets <- Drug_Targets[which(Drug_Targets$Drug.Target != ''),]
+Drug_Targets <- unique(Drug_Targets)
+write.csv(Drug_Targets, '/Data/DrugTargets_MoA.txt', row.names = FALSE)
+```
+
+We can now proceed with the different clustering methods. We will analyse if the ATC codes or MoA of a given community produced by a specific clustering algorithm will be better than those in a random clustering. For this, Fisher's exact test will be used. The hypothesis are:
+
+*Null hypothesis: the two variables are independent.
+*Alternative hypothesis: the two variables are not independent.
+
+A function has be created for this, where:
+*`atc`: is the ATC code or MoA of interest.
+*`atc_community`: vector with ATC codes or MoA of a specific community.
+*`data`: the merged ATC codes or the MoA.
+*`attribute`: 'Codes' or 'MoA' for ATC codes or MoA or a Drug, respectively.
+
+This function will give the p-value of a specific ATC being overrepresented in a drug community. 
+
+```{r}
+fisher_test_community <- function(atc, atc_community, data, attribute){
+  
+  atc_occur_community <- length(atc_community$Drugs[which(atc_community[,attribute]==atc)])
+  atc_occur_outside <- length(data$Drugs[which(data[,attribute]==atc)])-atc_occur_community
+  other_atc_community <- length(unique(atc_community$Drugs))-atc_occur_community #only drugs with known ATC are counted
+  other_atc_outside <- length(unique(data$Drugs))-atc_occur_community- atc_occur_outside - other_atc_community
+  matrix <- matrix(c(atc_occur_community, other_atc_community, atc_occur_outside,other_atc_outside), ncol=2)
+  test=fisher.test(cmatrix, alternative = "greater")
+  return(test$p.value)
+}
+```
+
+This test has to be done with a drug community, hence we create another function to perform this. This contains:
+*`i`: community ID of a specific drug community.
+*`drug_communities`: data frame that contains two columns, one for the community ID and another for the drugs that belong to that specific community.
+*`data`: either the ATC codes or the MoA.
+*`attribute`: 'Codes' or 'MoA' for ATC codes and MoA for a drug target respectively.
+
+This function will provide the p-values of the enrichment tests for each ATC of a drug community.
+
+```{r}
+performEnrichTestinCommunity <- function(i, drug_communities, data, attribute){
+  #retrieve the drugs in the community
+  drugs_community <- drug_communities$Drugs[which(drug_communities$Community_ID==i)] #1
+  
+  #retrieve their ATC codes
+  atc_community  <- data[data$Drugs%in%drugs_community,]
+  
+  #enrichment test is only done for atc codes that correspond to at least two drugs
+  frequency_codes <- table(atc_ccommunity[,attribute])
+  freq_codes <- names(frequency_codes)[which(frequency_codes>1)]
+  
+  if(length(freq_codes)!=0){
+    res <- sapply(freq_codes,function(atc){fisher_test_community(atc, atc_community, data, attribute)})
+  }else{
+    res <- NA 
+    names(res) <- NA
+  }
+  return(res)
+}
+
+```
+
+This enrichment test has to be perform for every clustering method, hence we create another function for this. The elements needed for this function are identical to the ones before. This function will return a data frame that will contain the community ID, whether it is an ATC code or a MoA, and the p-value.
+
+```{r}
+enrichmentClustering <- function(drug_communities, data, attribute){
+  communities <- unique(drug_communities$Community_ID)
+  list <- lapply(communities,function(x){performEnrichTestinCommunity(x, drug_communities,table,attribute)})
+  if (is.list(list)){
+    ResultsEnrichment <- data.frame(Community_ID=rep(communities,sapply(list, FUN=length)),attribute=as.vector(names(unlist(list))),Pvalues=as.numeric(unlist(list)))
+  }else{
+    ResultsEnrichment <- data.frame(Community_ID=rep(communities,sapply(list, FUN=length)),attribute=as.vector(names(list)),Pvalues=as.numeric(list))
+  }
+  
+  colnames(ResultsEnrichment)=c("Community_ID",attribute,"Pvalues")
+  
+  #Correction for multiple testing
+  ResultsEnrichment$Pvalues=p.adjust(ResultsEnrichment$Pvalues, method = "BH")
+  return(ResultsEnrichment)
+}
+```
+
+This next function will create a data frame for each pair of drug indicating whether their ATC code or their MoA are shared -TRUE-, not shared -FALSE-, or not known. This function will use:
+*`distmat`: matrix that contains the drug distances.
+*`merged_ATC`: ATC codes for all the drugs. 
+*`DrugTargets`: MoA of each drug.
+
+```{r}
+buildDrugPairsTable <- function(distmat, merged_ATC, DrugTargets){
+  DrugPairs <- distmat #retrieve all drug pairs
+  DrugPairs[upper.tri(DrugPairs)] <- NA
+  diag(DrugPairs) <- NA
+  DrugPairs <- melt(DrugPairs, na.rm = TRUE)
+  DrugPairs$value <- NULL
+  colnames(DrugPairs) <- c("Drug_1","Drug_2")
+  
+  #Identify which drugs have the same ATC
+  DrugPairs$SameATC <- sapply(c(1:nrow(DrugPairs)),function(x){
+    match <- intersect(merged_ATC$Codes[which(merged_ATC$Drugs==DrugPairs$Drug_1[x])], merged_ATC$Codes[which(merged_ATC$Drugs==DrugPairs$Drug_2[x])])
+    if (length(match)==0){
+      return(FALSE)} 
+    else{return(TRUE)}})
+  
+  DrugsATC <- unique(merged_ATC$Drugs)
+  DrugPairs$SameATC[!DrugPairs$Drug_1%in%DrugsATC] <- "Not known"
+  DrugPairs$SameATC[!DrugPairs$Drug_2%in%DrugsATC] <- "Not known"
+  
+  #Identify which drugs have the same MoA
+  DrugPairs$SameDrugTarget <- sapply(c(1:nrow(DrugPairs)),function(x){
+    match <- intersect(DrugTargets$MoA[which(as.character(DrugTargets$Drugs)==DrugPairs$Drug_1[x])],DrugTargets$MoA[which(as.character(DrugTargets$Drugs)==DrugPairs$Drug_2[x])])
+    if (length(match)==0){
+      return(FALSE)} 
+    else{return(TRUE)}})
+  
+  DrugsDT <- unique(as.character(DrugTargets$Drugs))
+  DrugPairs$SameDrugTarget[!DrugPairs$Drug_1%in%DrugsDT] <- "Not known"
+  DrugPairs$SameDrugTarget[!DrugPairs$Drug_2%in%DrugsDT] <- "Not known"
+  return(DrugPairs)
+}
+
+```
+
+Once the data frame with the drug pairs is obtained, an additional column indicating whether the drug is paired in the same community or not is added with the following function.
+
+```{r}
+addCommunitiestoDrugPairs <- function(DrugPairs,drug_communities){
+DrugPairs$community1 <- drug_communitiesS$Community_ID[match(DrugPairs$Drug_1,drug_communities$Drugs)]
+DrugPairs$community2 <- drug_communities$Community_ID[match(DrugPairs$Drug_2,drug_communities$Drugs)]
+DrugPairs$SameCommunity <- FALSE
+DrugPairs$SameCommunity[which(DrugPairs$community1==DrugPairs$community2)] <- TRUE
+return(DrugPairs)
+}
+```
+
+Finally, we can perform Fisher's exact test to determine if drugs with similar MoA or ATC code, belong to the same community or not. This function will return its p-value.
+
+```{r}
+runFisherTestDrugPairs <- function(DrugPairs,attribute){
+  sameCommunity_sameAttribute <- length(which(DrugPairs$SameCommunity==TRUE & DrugPairs[,attribute]==TRUE))
+  sameCommunity_difAttribute <- length(which(DrugPairs$SameCommunity==TRUE & DrugPairs[,attribute]==FALSE))
+  difCommunity_sameAttribute <- length(which(DrugPairs$SameCommunity==FALSE & DrugPairs[,attribute]==TRUE))
+  difCommunity_difAttribute <- length(which(DrugPairs$SameCommunity==FALSE & DrugPairs[,attribute]==FALSE))
+  
+  cmatrix <- matrix(c(sameCommunity_sameAttribute,sameCommunity_difAttribute,difCommunity_sameAttribute,difCommunity_difAttribute),ncol=2)
+  test <- fisher.test(cmatrix,alternative="greater")
+  return(test$p.value)
+}
+```
+
+With all the functions designed above, we can finally create one final function that can perform the enrichment analysis of a clustering according to their ATC codes and MoA. The input of the function is the following:
+*`drug_communities`: the data frame that contains two columns, one for the community ID and the other for the drugs that belong to that community.
+*`signific`: the significant threshold we would like to set for Fisher's exact test.
+*`level`: the ATC code level that we would like to analyse.
+*`filtered`: TRUE or FALSE, which indicates if we would like to filter the communities according to the threshold we set before or not.
+
+This function will give as output a data frame with the number of clusters, the drugs included, the enriched clusters, the percentage of enriched clusters out of the total number of clusters, Fisher's exact test p-value, the Adjusted Rand Index compared to reference communities and the overlap with the communities found.
+
+```{r}
+enrichedclusters <- function(drug_communities,signific,level,filtered, soft){
+  merged_ATC$Codes <- substring(merged_ATC$Codes,1,level)
+  merged_ATC <- unique(merged_ATC)
+  
+  #Performing the enrichment of the communities with AP clustering method -the one chosen by Iorio- to then compare it with the alternative clustering results 
+  enriched_ATC_AP <- enrichmentClustering(AP_communities,merged_ATC,"Codes")
+  enriched_ATC_AP <- as.character(unique(enriched_ATC_AP$Codes[which(enriched_ATC_AP$Pvalues<0.05)]))
+  enriched_DT_AP <- enrichmentClustering(AP_communities,DrugTargets,"MoA")
+  enriched_DT_AP <- as.character(unique(enriched_DT_AP$MoA[which(enriched_DT_AP$Pvalues<0.05)]))
+  
+  #Enrichment analysis of the clustering results
+  enrichment <- enrichmentClustering(drug_communities,merged_ATC,"Codes")
+  enriched_clusters_ATC <- length(unique(enrichment$Community_ID[which(enrichment$Pvalues < signific)]))
+  enriched_ATC <- as.character(unique(enrichment$Codes[which(enrichment$Pvalues<0.05)]))
+  intersect_AP <- intersect(enriched_ATC_AP,enriched_ATC)
+  percent_overlap_ATC <- length(intersect_AP)/length(enriched_ATC_AP)
+  
+  enrichment_DT <- enrichmentClustering(drug_communities,DrugTargets,"MoA")
+  enriched_clusters_DT <- length(unique(enrichment_DT$Community_ID[which(enrichment_DT$Pvalue < signific)]))
+  
+  enriched_DT <- as.character(unique(enriched_DT$MoA[which(enrichment_DT$Pvalues<0.05)]))
+  intersect_DT_AP <- intersect(enriched_DT_AP,enriched_DT)
+  percent_overlap_DT <- length(intersect_DT_AP)/length(enriched_DT_AP)
+  
+  #Compute other info about the clustering
+  RemovedDrugs <- nrow(distmat)-length(unique(drug_communities$Drugs))
+  IncludedDrugs <- nrow(dismat)-RemovedDrugs-length(which(table(drug_communities$Community_ID)==1))
+  totalClusters <- length(which(table(drug_communities$Community_ID)>1))
+  percentage_ATC <- round(enriched_clusters_ATC*100/totalClusters, 2)
+  percentage_DT <- round(enriched_clusters_DT*100/totalClusters,2)
+  
+  #1 Fisher Test
+  DrugPairs <- buildDrugPairsTable(distmat, merged_ATC, DrugTargets)
+  write.csv(DrugPairs, '../Results/DrugPairsInfo', level, '.csv')
+  DrugPairs_k <- addCommunitiestoDrugPairs(DrugPairs,drug_communities)
+  pvalue_ATC <- runFisherTestDrugPairs(DrugPairs_k,"SameATC")
+  pvalue_DT <- runFisherTestDrugPairs(DrugPairs_k,"SameDrugTarget")
+  vect_res <- as.numeric(drug_communities$Community_ID)
+  names(vect_res) <- drug_communities$Drugs
+  
+  #Adjusted Rand Index and internal measures -Soft Silhouette Width, PAE, PC and MPC for soft clustering, and Dunn Index and Silhouette Width for hard clustering. 
+  if (filtered==TRUE){
+    removedDrugs <- names(ap_vector)[!names(ap_vector)%in%names(vect_res)]
+    singleClusters <- imaginaryCommunities[1:length(removedDrugs)]
+    names(singleClusters) <- removedDrugs
+    vect_res <- c(vect_res,singleClusters)
+    vect_res <- vect_res[match(names(ap_vector_filtered),names(vect_res))]
+    adj <- adjustedRandIndex(ap_vector_filtered,vect_res)
+    if (soft == TRUE){
+      sil_index <- SIL.F(cluster_stats$Xca, cluster_stats$U, distance = FALSE)
+      part_entropy <- PE(cluster_stats$U)
+      part_coeff <- PC(cluster_stats$U)
+      modpart_coeff <- MPC(cluster_stats$U)
+      res <- data.frame(K=length(unique(drug_communities$Community_ID)),"IncDrugs"= IncludedDrugs, "EnrichedClusters"=enriched_clusters_ATC, "Percentage"=percentage_ATC, "EnrichedClustersDT"=enriched_clusters_DT, "PercentageDT"=percentage_DT, "Pval_ATC"=pvalue_ATC,"Pval_DT"=pvalue_DT,"ARIndex"=adj, "Fuzzy Silhouette width" = sil_index, 'Partition Entropy' = part_coeff, 'Partition Coefficient' = part_coeff, 'Modified Partition Coefficient' = modpart_coeff, "Variation of information index" = stats$vi, "Overlap_ATC" = percent_overlap_ATC, "Overlap_DT" = percent_overlap_DT)
+    }else{
+      stats <- cluster.stats(as.dist(distmat), vect_res)
+      res <- data.frame(K=length(unique(drug_communities$Community_ID)),"IncDrugs"= IncludedDrugs, "EnrichedClusters"=enriched_clusters_ATC, "Percentage"=percentage_ATC, "EnrichedClustersDT"=enriched_clusters_DT, "PercentageDT"=percentage_DT, "Pval_ATC"=pvalue_ATC,"Pval_DT"=pvalue_DT,"ARIndex"=adj,"Dunn" = stats$dunn, "Silhouette width" = stats$avg.silwidth, "Variation of information index" = stats$vi, "Overlap_ATC"= percent_overlap_ATC, "Overlap_DT"= percent_overlap_DT)
+    }
+  }else{
+    vect_res <- vect_res[match(names(apres_vect),names(vect_res))]
+    adj <- adjustedRandIndex(apres_vect,vect_res)
+    if (soft == TRUE){
+      sil_index <- SIL.F(cluster_stats$Xca, cluster_stats$U, distance = FALSE)
+      part_entropy <- PE(cluster_stats$U)
+      part_coeff <- PC(cluster_stats$U)
+      modpart_coeff <- MPC(cluster_stats$U)
+      res <- data.frame(K=length(unique(drug_communities$Community_ID)),"IncDrugs"= IncludedDrugs, "EnrichedClusters"=enriched_clusters_ATC, "Percentage"=percentage_ATC, "EnrichedClustersDT"=enriched_clusters_DT, "PercentageDT"=percentage_DT, "Pval_ATC"=pvalue_ATC,"Pval_DT"=pvalue_DT,"ARIndex"=adj, "Fuzzy Silhouette width" = sil_index, 'Partition Entropy' = part_coeff, 'Partition Coefficient' = part_coeff, 'Modified Partition Coefficient' = modpart_coeff, "Variation of information index" = stats$vi, "Overlap_ATC" = percent_overlap_ATC, "Overlap_DT" = percent_overlap_DT)
+    }else{
+      stats <- cluster.stats(as.dist(distmat), vect_res)
+      res <- data.frame(K=length(unique(drug_communities$Community_ID)),"IncDrugs"= IncludedDrugs, "EnrichedClusters"=enriched_clusters_ATC, "Percentage"=percentage_ATC, "EnrichedClustersDT"=enriched_clusters_DT, "PercentageDT"=percentage_DT, "Pval_ATC"=pvalue_ATC,"Pval_DT"=pvalue_DT,"ARIndex"=adj,"Dunn" = stats$dunn, "Silhouette width" = stats$avg.silwidth, "Variation of information index" = stats$vi, Overlap_ATC= "percent_overlap_ATC", Overlap_DT= "percent_overlap_DT")
+    }
+  }
+  return(res)
+}
+
+```
+
+We are going to design the clustering algorithm functions as well as their enriched functions. For this, we are going to start by comparing the AP clustering with different input preferences against the original one that was used in Iorio et al.
+
+```{r}
+obtainCommTableAP <- function(preferences){
+  ap_result <- apcluster(1-distmat,details=TRUE,seed=10,p=preferences) 
+  Drugs <- colnames(distmat)
+  drug_communities <- data.frame("Community_ID"=numeric(length(Drugs)),"Drugs"=Drugs)
+  for (i in 1:length(ap_result)){
+    drug_communities$Community_ID[which(drug_communities$Drugs%in%names(ap_result[[i]]))] <- i
+  }
+  return(drug_communities)
+}
+
+enrichedclustersAP <- function(p,signific,level,filtered){
+  ap_table <- obtainCommTableAP(p)
+  if (filtered==TRUE){
+    ap_table <- filteredCommunities(ap_table, distmat)
+  }
+  return(enrichedclusters(ap_table,signific,level,filtered))
+}
+```
+
+Agglomerative hierarchical clustering is a method of cluster analysis where each observation starts its own cluster, and pairs of clusters merge as one moves up in the hierarchy. The merge takes place as a greedy manner by different linkage methods. The main use are:
+
+*Complete-linkage clustering: the two clusters that are separated by the shortest distance are combined. However, the distance chosen between the two elements of the cluster is the maximum one.
+*Single-linkage clustering: the two clusters that are separated by the shortest distance are combined. However, the distance chosen between the two elements of the cluster is the minimum one.
+*Average-linkage clustering: the two clusters that are separated by the shortest distance are combined. However, the distance chosen between the two elements of the cluster is the average one.
+*Ward.D2-linkage clustering: minimises the total within-clustering variation. It finds the pair of clusters that leads to minimum increase in total within cluster variance after merging.
+
+In here, we will determine first which is the best linkage method by using the agnes function, and then, we will use hierarchical clustering where the number of clusters will be modified to later perform the enrichment/validation analysis. It takes as input a dissimilarity matrix.
+
+```{r}
+m <- c( "average", "single", "complete", "ward")
+names(m) <- c( "average", "single", "complete", "ward")  
+
+agglo_coef <- function(x) {
+  agnes(t(log_cpm_normalised), method = x)$ac
+}
+
+ac_comparison <- sapply(m, agglo_coef)
+
+obtainCommTableHC <- function(i){
+  hc_clust <- hclust(as.dist(distmat),method="COMPLETE WHEN CHOSEN ALGORITHM") #since it's needed a dissimilarity matrix we just need to use the as.dist function with the distance matrix created before.
+  hc_res <- cutree(hc_clust, i)  #With cutree we can cut the dendogram into several groups according to the number of clusters.
+  HC_df <- data.frame(Community_ID= integer(nrow(distmat)), Drugs=character(nrow(distmat)))
+  HC_df$Drugs <- names(hc_res)
+  HC_df$Community_ID <- hc_res
+  return(HC_df)
+}
+
+enrichedclustersHC  <- function(i,signific,level,filtered){
+  hc_table <- obtainCommTableHC(i)
+  if (filtered==TRUE){
+    hc_table <- filteredCommunities(hc_table, DRUG_DISTANCES)
+  }
+  return(enrichedclusters(hc_table,signific,level,filtered))
+}
+```
+
+Partitioning around medoids clustering attempt to minimize the distance between points labeled to be in a cluster and the medoid -the most centrally located point in the cluster-, in other words, the average dissimilarity to all the objects is minimal.
+
+It takes as input a dissimilarity matrix and what will be modified in this algorithm is the number of clusters. This will then be used for the enrichment and validation analysis.
+
+```{r}
+obtainCommTablePAM <- function(i){
+  pam_res <- pam(as.dist(distmat),i,diss=TRUE)  #i: n of clusters
+  pam_df <- data.frame(Community_ID= integer(nrow(distmat)), Drugs= character(nrow(distmat)))
+  pam_df$Drugs <- names(pam_res$clustering)
+  pam_df$Community_ID <- pam_res$clustering
+  return(pam_df)
+}
+
+enrichedclustersPAM <- function(i,signific,level,filtered){
+  pam_table <- obtainCommTablePAM(i)
+  if (filtered==TRUE){
+    pam_table <- filteredCommunities(pam_table, DRUG_DISTANCES)
+  }
+  return(enrichedclusters(pam_table,signific,level,filtered))
+}
+
+```
+
+Markov Cluster Algorithm is a graph-based algrotihm based on simulation of stochastic flow graphs. The idea of this cluster is that if you start randomly walking from a node, the more likely you are to move around in the same cluster than to cross to another one. This is because the clusters are internally dense. 
+
+Puv(k) is the probability of starting in the node u and finishing in the node v with k steps.
+
+This algorithm is based on inflation and expansion, where inflation raises single columns of a matrix to the n power, and expansion raises the transition matrix to the exponent n. This allows to connect different regions of the graph and determine the clusters.
+
+This algorithm takes as input a similarity matrix that is then transformed by the programme into a transition matrix. This is done externally by a programme, which can be downloaded in: https://micans.org/mcl 
+
+The line that will be used is the following:
+
+## mcl data.txt -I infl -o data.out
+
+Where infl will be the different inflation values. Following Barbara's dissertation, this will range between 1.4 and 7.0.
+
+Then the output obtained will be introduced in here and the enrichment and validation analysis will be performed.
+
+```{r}
+obtainCommTableMCL <- function(infl){
+  infl <- infl*10
+  results.list <- strsplit(readLines(paste("../DATA/MCL_OUTPUT/out.MCL_SimTab","_noairq.txt.I",infl,sep="")),"\t")
+  mclres <- data.frame(cID=integer(1309),DRUGS=character(1309))
+  mclres$DRUGS <- unlist(results.list)
+  j <- 1
+  for (clusters in results.list){
+    mclres$cID[mclres$DRUGS%in%clusters] <- j
+    j <- j+1
+  }
+  return(mclres)
+}
+
+enrichedclustersMCL=function(infl,signific,level,filtered){
+  mcl_table=obtainCommTableMCL(infl)
+  if (filtered==TRUE){
+    mcl_table <- filteredCommunities(mcl_table, DRUG_DISTANCES)
+  }
+  res <- enrichedclusters(mcl_table,signific,level,filtered)
+  return(res)
+}
+```
+
+ClusterONE is a graph-based soft-clustering. It needs to be performed through java with the programme, which can be downloaded at: https://paccanarolab.org/cluster-one/
+
+This programme needs a text file that contains three columns: the first two columns contain the names of the drugs that interact, and the third column the weights, which are the distances obtained. ClusterONE only accepts weights between 0 and 1, hence the distance will be transformed by the following equation:
+
+ s = 1/(1+d)
+
+Where d corresponds to the distance obtained. 
+
+This cluster is going to look for groups with high cohesiveness which are densely connected and possible overlapping regions. 
+
+```{r}
+drug_distances <- as.data.frame(DRUG_DISTANCES)
+drug_distances[, 1] <- rownames(DRUG_DISTANCES)
+rownames(drug_distances) <- drug_distances[, 1]
+drug_distances <- pivot_longer(drug_distances, cols = 2:(ncol(drug_distances)), names_to = 'id2', values_to = 'weights')
+drug_distances <- drug_distances[drug_distances$weights < 0.8065, ]
+drug_distances <- drug_distances[which(drug_distances$weights != '0'), ]
+drug_distances$weights <- 1/(1+drug_distances$weights)
+write.table(drug_distances, '/Users/mariajimenezramos/Desktop/test.txt', row.names = FALSE, col.names = FALSE, sep = "\t", quote = FALSE)
+```
+
+This data frame will be saved as a text file and will be used as output for the java programme. The code introduced is the following:
+
+ ##java -jar cluster_one.jar -d dens -s size input_file.txt > result.txt
+ 
+Where dens correspond to the density value and size to the size parameter. Following Barbara's analysis, the size parameter has been kept constant -1- and the density has been modified with values ranging from 0.0125 to 0.7425. 
+ 
+These files are used for the enrichment / validation analysis. It is important to know that the validation measures for soft clustering differ from those from hard clustering. For this reason, in the case of these clustering methods additional measure will be used.
+
+```{r}
+obtainCommTableClONE <- function(dens){
+  results.list <- strsplit(readLines(paste("/Users/mariajimenezramos/PhD/Drug_repuposing/Clusters",dens,".txt",sep="")),"\t")
+  nr <- length(unlist(results.list))
+  clusters <- data.frame(Community_ID=integer(nr),Drugs=character(nr))
+  clusters$DRUGS <- unlist(results.list)
+  repetitions <- sapply(results.list,FUN=length)
+  clusters$Community_ID <- rep(c(1:length(results.list)),repetitions)
+  
+  return(clusters)
+}
+
+enrichedclustersClONE <- function(dens,signific,level,filtered){     #Computes densities of observations in parameterized MVN mixtures.
+  cl_table <- obtainCommTableClONE(dens)
+  if (filtered==TRUE){
+    cluster_table <- filteredCommunities(cl_table, DRUG_DISTANCES)
+  }
+  return(enrichedclusters(cluster_table,signific,level,filtered))
+}
+```
+
+Fuzzy c-means clustering is a soft clustering very similar to k-means algorithm. We need to introduce the number of clusters that we would like to have at the end. Each data point is assigned a likelihood or probability score to belong to a specific cluster. A centroid is calculated, which correspond to the average of all the points that belong to a cluster, weighted by their degree of belonging to the cluster. The matrix is updated at every step, until convergence. Each data point ends up with a membership value, which indicates how much of that data point belongs to a cluster; and a fuzzifier, which determines the level of fuzziness. The membership values go from 0 to 1, with the small results when the fuzzifier is large. 
+
+It takes as input a similarity matrix.
+
+```{r}
+obtainCommTableFCM <- function(i){
+  fcm_res <- fcm(x = 1-distmat, centers = i) #i: n of clusters
+  fcm_modified <- ppclust2(fcm.res, 'flcust')
+  fcm_df <- data.frame(Community_ID= integer(nrow(distmat)), Drugs= character(nrow(distmat)))
+  fcm_df$Drugs <- colnames(distmat)
+  fcm_df$Community_ID <- fcm_res$cluster
+  return(fcm_df, fcm_modified)
+}
+
+enrichedclustersFCM <- function(i,signific,level,filtered){
+  fcm <- obtainCommTableFCM(i)
+  fcm_table <- fcm$fcm_df
+  fcm_stats <- fcm$fcm_modified
+  if (filtered==TRUE){
+    fcm_table <- filteredCommunities(fcm_table, DRUG_DISTANCES)
+  }
+  return(enrichedclusters(fcm_table,signific,level,filtered, soft, fcm_stats))
+}
+
+```
+
+WAll these clusters will be compared with a random cluster.
+
+```{r}
+enrichedRandomAP <- function(p,signific,level,filtered){
+  ap_table <- obtainCommTableAP(p)
+  if (filtered==TRUE){
+    ap_table <- filteredCommunities(ap_table, distmat)
+  }
+  res_random <- randomParallel(ap_table,0.05,4)
+  return(res_random)
+}
+
+enrichmentRandom <- function(x,tab,signific,level){
+  communities_random <- tab
+  communities_random$Community_ID <- sample(communities_random$Community_ID)
+  return(enrichedclusters(communities_random,signific,level,FALSE))
+}
+
+randomParallel <- function(tab,signific,level,filtered=FALSE){
+cl <- makeCluster(8,type = "FORK")
+clusterExport(cl,varlist=ls(),envir=environment())
+clusterEvalQ(cl, library(cluster))
+clusterEvalQ(cl, library(mclust))
+res_random <- parSapply(cl,c(1:100),enrichmentRandom,tab=tab,signific=signific,level=level)
+stopCluster(cl)
+res <- data.frame(K=quantile(as.numeric(res_random["K",]),0.50),EnrichedClusters=quantile(as.numeric(res_random["EnrichedClusters",]),0.50),Percentage=quantile(as.numeric(res_random["Percentage",]),0.50),EnrichedClustersDT=quantile(as.numeric(res_random["EnrichedClustersDT",]),0.50),PercentageDT=quantile(as.numeric(res_random["PercentageDT",]),0.50),Pval_ATC=quantile(as.numeric(res_random["Pval_ATC",]),0.50),Pval_DT=quantile(as.numeric(res_random["Pval_DT",]),0.50))
+return(res)
+}
+
+enrichedRandomClONE <- function(d,signific,level,filtered){
+  clone_table <- obtainCommTableClONE(d)
+  if (filtered==TRUE){
+    clone_table <- filteredCommunities(clone_table, distmat)
+  }
+  res_random <- randomParallel(clone_table,signific,level)
+  return(res_random)
+}
+
+enrichedRandomHC <- function(i,signific,level,filtered){
+  hc_tab <- obtainCommTableHC(i)
+  if (filtered==TRUE){
+    hc_tab <- filteredCommunities(hc_tab, distmat)
+  }
+  res_random <- randomParallel(hc_tab,signific,level)
+  return(res_random)
+}
+
+enrichedRandomMCL <- function(infl,signific,level,filtered){
+  mcl_table <- obtainCommTableMCL(infl)
+  if (filtered==TRUE){
+    mcl_table <- filteredCommunities(mcl_table, distmat)
+  }
+  res_random <- randomParallel(mcl_table,signific,level)
+  return(res_random)
+}
+
+enrichedRandomPAM <- function(i,signific,level,filtered){
+  pam_table <- obtainCommTablePAM(i)
+  if (filtered==TRUE){
+    pam_table <- filteredCommunities(pam_table, distmat)
+  }
+  res_random <- randomParallel(pam_table,signific,level)
+  return(res_random)
+}
+
+enrichedRandomFCM <- function(i, signific, level, filtered){
+  fcm_table <- obtainCommTableFCM(i)
+  if (filtered == TRUE){
+    fcm_table <- filteredCommunities(fcm_table, distmat)
+  }
+  res_random <- randomParallel(fcm_table, signific, level)
+  return(res_random)
+}
+```
+
+Once we have all the functions to obtain the clustering as well as the enrichment, we can start running the algorithms.
+
+ClusterONE clustering
+
+```{r}
+#Random clustering
+dens <-  seq(0.0125,0.7425,by=0.01)
+l <- 4
+results_clone_random <- sapply(dens,enrichedRandomClONE,signific=0.05,level=l,filtered=FALSE) 
+results_clone_random <- as.matrix(results_clone_random)
+write.csv(results_clone_random,paste("../Data/Analysis/Results_clone_random",l,".csv",sep=""))
+
+#Non-filtered
+results_clone <- sapply(dens,enrichedclustersClONE,signific=0.05,level=l,filtered=FALSE) 
+results_clone <- as.matrix(results_clone)
+write.csv(results_clone,paste("../Data/Analysis/Results_clone",l,".csv",sep=""))
+
+#Filtered
+results_clone <- sapply(dens,enrichedclustersClONE,signific=0.05,level=l,filtered=FALSE) 
+results_clone <- as.matrix(results_clone)
+write.csv(results_clone,paste("../Data/Analysis/Results_clone_filtered",l,".csv",sep=""))
+
+```
+
+Hierarchical clustering
+
+```{r}
+#Random clustering
+ks=seq(2,400,by=2)
+
+results_HC_random <- sapply(ks,enrichedRandomHC,signific=0.05,level=4,filtered=FALSE)
+results_HC_random <- as.matrix(results_HC_random)
+write.csv(results_HC_random,paste("../Data/Analysis/Results_HC_random",4,".csv",sep=""))
+
+#Non-filtered
+results_HC <- sapply(ks,enrichedclustersHC,signific=0.05,level=4,filtered=FALSE)
+results_HC <- as.matrix(results_HC)
+write.csv(results_HC,paste("../Data/Analysis/Results_HC",4,".csv",sep=""))
+
+#Filtered 
+results_HC <- sapply(ks,enrichedclustersHC,signific=0.05,level=4,filtered=TRUE)
+results_HC <- as.matrix(results_HC)
+write.csv(results_HC,paste("../Data/Analysis/Results_HC_filtered",4,".csv",sep=""))
+
+```
+
+Markov Cluster Algorithm
+
+```{r}
+#Random clustering
+infls=seq(1.4,7.0,0.2)
+
+results_MCL_random <- sapply(infls,enrichedRandomMCL,signific=0.05,level=4,filtered=FALSE) 
+results_MCL_random <- as.matrix(results_MCL_random)
+write.csv(results_MCL_random,paste("../Data/Analysis/Results_MCL_random",4,".csv",sep=""))
+
+#Non-filtered
+results_MCL <- sapply(infls,enrichedclustersMCL,signific=0.05,level=l,filtered=FALSE) 
+results_MCL <- as.matrix(results_MCL)
+write.csv(Results_MCL_koptimiz,paste("../Data/Analysis/Results_MCL",l,".csv",sep=""))
+
+#Filtered
+results_MCL <- sapply(infls,enrichedclustersMCL,signific=0.05,level=l,filtered=FALSE) 
+results_MCL <- as.matrix(results_MCL)
+write.csv(Results_MCL_koptimiz,paste("../Data/Analysis/Results_MCL_filtered",l,".csv",sep=""))
+
+```
+
+PAM clustering
+
+```{r}
+#Random clustering
+results_PAM_random <- sapply(ks,enrichedRandomPAM,signific=0.05,level=l,filtered=FALSE) #ks correspond to the number of clusters 
+results_PAM_random <- as.matrix(results_PAM_random)
+write.csv(results_PAM_random,paste("../Data/Analysis/Results_PAM_random",l,".csv",sep=""))
+
+#Non-filtered
+results_PAM <- sapply(ks,enrichedclustersPAM,signific=0.05,level=l,filtered=FALSE) 
+results_PAM <- as.matrix(results_PAM)
+write.csv(results_PAM,paste("../Data/Analysis/Results_PAM",l,".csv",sep=""))
+
+#Filtered
+results_PAM <- sapply(ks,enrichedclustersPAM,signific=0.05,level=l,filtered=TRUE) 
+results_PAM <- as.matrix(results_PAM)
+write.csv(results_PAM,paste("../Data/Analysis/Results_PAM_filtered",l,".csv",sep=""))
+
+```
+
+AP clustering
+
+```{r}
+results_AP_random <- sapply(ks, enrichedRandomAP, signific= 0.05, level = l, filtered =FALSE)
+results_AP_random <<- as.matrix(results_AP_random)
+write.csv(results_AP_random, paste("../Data/Analysis/Results_AP_random", l, ".csv", sep = ""))
+
+#Non-filtered
+results_AP <- sapply(ks, enrichedclustersAP, signific = 0.05, level = l, filtered = FALSE)
+results_AP <- as.matrix(results_AP)
+write.csv(results_AP, paste("../Data/Analysis/Results/Results_AP", l, ".csv", sep = ""))
+
+#Filtered
+results_AP_filtered <- sapply(ks, enrichedclusterAP, signific = 0.05, level = l, filtered = TRUE)
+results_AP_filtered <- as.matrix(results_AP_filtered)
+write.csv(results_AP_filtered, "../Data/Analysis/Results_AP_filtered", l, ".csv", sep = "")
+```
+
+FCM clustering
+
+```{r}
+results_FCM_random <- sapply(ks, enrichedRandomFCM, signific= 0.05, level = l, filtered =FALSE)
+results_FCM_random <<- as.matrix(results_FCM_random)
+write.csv(results_FCM_random, paste("../Data/Analysis/Results_FCM_random", l, ".csv", sep = ""))
+
+#Non-filtered
+results_FCM <- sapply(ks, enrichedclustersFCM, signific = 0.05, level = l, filtered = FALSE)
+results_FCM <- as.matrix(results_FCM)
+write.csv(results_FCM, paste("../Data/Analysis/Results/Results_FCM", l, ".csv", sep = ""))
+
+#Filtered
+results_FCM_filtered <- sapply(ks, enrichedclustersFCM, signific = 0.05, level = l, filtered = TRUE)
+results_FCM_filtered <- as.matrix(results_FCM_filtered)
+write.csv(results_FCM_filtered, "../Data/Analysis/Results_FCM_filtered", l, ".csv", sep = "")
+```
+
+With all the code done, we can now visualise what we have obtained and determine which clustering method is the best one. For this, a function to plot the clusters and a function to rearrange the data for visualisation are created.
+
+```{r}
+#Colours for the plots
+colours <- c("cornflowerblue","darkolivegreen1","gray65","red3","gold", "darkorchid1")
+names(colours) <- levels(as.factor(c("AP","HC","MCL","PAM","CL1", 'FCM')))
+colScale <- scale_colour_manual(values = colours)
+colfillScale <- scale_fill_manual(values = colours)
+
+#Function for plotting the ATC clusters 
+plotclusters <- function(alg_comparison, comparison, ylab, filename){
+  percentage_ATC <- alg_comparison[,c("K",comparison,"algorithm")]
+  percentage_ATC <- melt(percentage_ATC,id=c("algorithm","K"))
+  ggplot(data=percentage_ATC, aes(x=K, y=value, colour=algorithm)) + 
+    geom_line(size=1.08)+ 
+    #geom_vline(xintercept=##best number of communities,linetype="dashed")+
+    labs(x="Number of Clusters", y = ylab, colour = '')+
+    theme_bw()+
+    xlim(0,400)+
+    colScale
+  ggsave(paste("Data/Results/",comparison,filename,".png",sep=""),width=13,height=12,units = "cm")
+}
+
+#Function to rearrange the data obtained for easier manipulation for visualisation
+tidyclusters <- function(filename,algorithm){
+  table <- read.csv(filename,header=TRUE)
+  names <- as.character(table$X)
+  table <- t(table[,-1])
+  colnames(table) <- names
+  table <- as.data.frame(table)
+  table$algorithm <- algorithm
+  return(table)
+}
+
+```
+
+We retrieve the information from the results obtained before.
+
+FIGURE OUT HOW TO PLOT INTERNAL MEASURES.
+
+```{r}
+HC_nf <- tidyclusters('', 'HC') #The file will go in the parenthesis
+HC_filtered <- tidyclusters('', 'HC')
+ClONE_nf <- tidyclusters('', 'ClONE')
+ClONE_filtered <- tidyclusters('', 'ClONE')
+MCL_nf <- tidyclusters('', 'MCL')
+MCL_filtered <- tidyclusters('', 'MCL')
+PAM_nf <- tidyclusters('', 'PAM')
+PAM_filtered <- tidyclusters('', 'PAM')
+AP_nf <- tidyclusters('', 'AP')
+AP_filtered <- tidyclusters('', 'AP')
+FCM_nf <- tidyclusters('','FCM')
+FCM_filtered <- tidyclusters('', 'FCM')
+algorithm_nf <- rbind(HC_nf, ClONE_nf, MCL_nf, PAM_nf, AP_nf, FCM_nf)
+algorithm_filtered <- rbind(HC_filtered, ClONE_filtered, MCL_filtered, PAM_filtered, AP_filtered, FCM_filtered)
+plotclusters(algorithm_nf, 'ARIndex', 'Adjusted Rand Index', 'ARIndexNonfiltered')
+plotclusters(algorithm_filtered, 'ARIndex', 'Adjusted Rand Index', 'ARIndexfiltered')
+
+```
+
+We then compare the mechanism of action and the ATC codes to determine if the ATC code provide a similar information about the drugs than the MoA. This would provide more information about the drugs available in comparison with the MoA.
+
+First we do this with the non-filtered clusters, then we do it with the filtered ones.
+
+```{r}
+comparison <- data.frame()
+list_algorithm <- list(HC_nf, PAM_nf, ClONE_nf, AP_nf, MCL_nf, FCM_nf)
+for (list in list_algorithm){
+  subset <- list[, c('K', 'EnrichedClusters', 'EnrichedClustersDT', 'algorithm')]
+  comparison <- rbind(comparison, subset)
+}
+
+k_cluster <- intersect(HC_nf$K, PAM_nf$K)
+k_cluster <- intersect(AP_nf$K, k_cluster)
+##Keep adding with those algorithms that work fine
+
+median_enrichment <- function(k){
+  enriched_ATC <- median(c(comparison$EnrichedClusters[which(comparison$K==k)], 1))
+  enriched_DT <- median(c(comparison$EnrichedClusters[which(comparison$K==k)], 1))
+  return(list(ATC=enriched_ATC, DT=enriched_DT))
+}
+
+values <- as.data.frame(t(as.data.frame(sapply(k_cluster, median_enrichment))))
+medians <- data.frame(K = k_cluster, '3rd level ATC' = as.numeric(values$ATC), 'Mode of Action'= as.numeric(values$DT))
+subset <- melt(medians, id = 'K')
+
+ggplot(data=subset, aes(x=K, y=value, colour=variable)) +
+  geom_line(size=1.08)+
+  labs(x="Number of Clusters",y = "Number of Enriched Communities")+
+  xlim(0,400)+
+  labs(colour = "")+
+  theme_bw()+
+  scale_color_jco(labels = c("ATC Code (3rd level)", "Mode of Action"))
+ggsave("Data/Results/Comparison_ATC_DT_nonfiltered.pdf",width=13,height=12, units = "cm")
+
+```
+
+We now do the same, but with the filtered communities.  
+
+```{r}
+comparison <- data.frame()
+list_algorithm <- list(HC_filtered, PAM_filtered, ClONE_filtered, AP_filtered, MCL_filtered, FCM_filtered)
+for (list in list_algorithm){
+  subset <- list[, c('K', 'EnrichedClusters', 'EnrichedClustersDT', 'algorithm')]
+  comparison <- rbind(comparison, subset)
+}
+
+k_cluster <- intersect(HC_filtered$K, PAM_filtered$K)
+k_cluster <- intersect(AP_filtered$K, k_cluster)
+##Keep adding with those algorithms that work fine
+
+values <- as.data.frame(t(as.data.frame(sapply(k_cluster, median_enrichment))))
+medians <- data.frame(K = k_cluster, '3rd level ATC' = as.numeric(values$ATC), 'Mode of Action'= as.numeric(values$DT))
+subset <- melt(medians, id = 'K')
+
+ggplot(data=subset, aes(x=K, y=value, colour=variable)) +
+  geom_line(size=1.08)+
+  labs(x="Number of Clusters",y = "Number of Enriched Communities")+
+  xlim(0,400)+
+  labs(colour = "")+
+  theme_bw()+
+  scale_color_jco(labels = c("ATC Code (3rd level)", "Mode of Action"))
+ggsave("Data/Results/Comparison_ATC_DT_filtered.pdf",width=13,height=12, units = "cm")
+
+```
+
+We can then create a heatmap to determine which ATC/MoA matches between the different clustering algorithms. First, we create several functions that would aid us to obtain the final heatmaps.
+
+```{r}
+MergedATCcodes <- read.csv("./Data/ProcessedATCcodes.csv",stringsAsFactors = FALSE,header=TRUE)
+DrugTargets <- read.csv("./Data/ProcessedDTargets.csv",header=TRUE,stringsAsFactors = FALSE)
+
+obtainEnrichedSet <- function(table,attribute,reference_table,level=5,signific=0.05){
+  if (attribute == "Codes"){
+    reference_table$Codes <- substring(reference_table$Codes,1,level)
+    reference_table <- unique(reference_table)
+  }
+  results <- enrichmentClustering(table,reference_table,attribute)
+  enriched <- results[which(results$Pvalues<signific),][,attribute]
+  enriched <- as.character(unique(enriched))
+  return(enriched)
+}
+
+heatmap_function <- function(enriched,enrAP,enrPAM,enrHC,enrMCL,enrClONE,enrFCM,Ref,level,filtered,filename){
+  df <- data.frame(matrix(0, nrow = 6, ncol = length(enriched)))
+  colnames(df) <- enriched
+  rownames(df) <- c("AP","PAM","HC","MCL","ClONE", 'FCM')
+  algorithm <- c("AP","PAM","HC","MCL","ClONE")
+  enr <- list(AP=enrAP,PAM=enrPAM,HC=enrHC,MCL=enrMCL,ClONE=enrClONE, FCM = enrFCM)
+  for (i in c(1:6)){
+    df[which(rownames(df)==alg[i]),enr[[i]]]=1
+    }
+  pdf(paste("Data/Results/",filename,".pdf",sep=""), width = 8, height = 10)
+  if (Ref=="ATCcodes"){
+    pheatmap(as.matrix(df),color=c("white","grey37"), legend = FALSE, show_colnames = FALSE,fontsize_row=16)
+    dev.off()
+    }else if (Ref=="MoA"){
+    pheatmap(as.matrix(df),color=c("white","grey37"), legend = FALSE, show_colnames = FALSE,fontsize_row=16)
+    dev.off()
+  }
+}
+
+heatmaps_algorithm <- function(AP,MCL,PAM,HC,ClONE,FCM, Ref,level,filtered,filename){
+  if (Ref=="ATCcodes"){
+    enrAP <- obtainEnrichedSet(AP,"Codes",MergedATCcodes,level)
+    enrMCL <- obtainEnrichedSet(MCL,"Codes",MergedATCcodes,level)
+    enrPAM <- obtainEnrichedSet(PAM,"Codes",MergedATCcodes,level)
+    enrHC <- obtainEnrichedSet(HC,"Codes",MergedATCcodes,level)
+    enrCL <- obtainEnrichedSet(CL,"Codes",MergedATCcodes,level)
+    enrFCM <- obtainEnrichedSet(FCM, 'Codes', MergedATCcodes, level)
+    ATC <- Reduce(union, list(enrAP, enrHC, enrPAM,enrMCL,enrClONE, enrFCM))
+    heatmapcode(ATC,enrAP,enrPAM,enrHC,enrMCL,enrClONE, enrFCM, Ref,level,filtered,filename)
+    } else if (Ref=="MoA"){
+    enrAP_DT <- obtainEnrichedSet(AP,"MoA",DrugTargets)
+    enrMCL_DT <- obtainEnrichedSet(MCL,"MoA",DrugTargets)
+    enrPAM_DT <- obtainEnrichedSet(PAM,"MoA",DrugTargets)
+    enrHC_DT <- obtainEnrichedSet(HC,"MoA",DrugTargets)
+    enrClONE_DT <- obtainEnrichedSet(CL,"MoA",DrugTargets)
+    enrFCM_DT <- obtainEnrichedSet(FCM, 'MoA', DrugTargets)
+    MoA <- Reduce(union, list(enrAP_DT, enrHC_DT, enrPAM_DT,enrMCL_DT,enrClONE_DT, enrFCM_DT))
+    heatmapcode(MoA,enrAP_DT,enrPAM_DT,enrHC_DT,enrMCL_DT,enrClONE_DT, enrFCM_DT, Ref,level,filtered,filename)
+  }
+  return(TRUE)
+}
+```
+
+Once the functions are created, we choose the optimal number of clusters previously determined and get the heatmaps for both filtered and non-filtered communities.
+
+```{r}
+AP <- obtainCommTableAP(pref=)
+AP_filtered <- filteredCommunities(AP,distmat)
+MCL <- obtainCommTableMCL()
+MCL_filtered <- filteredCommunities(MCL,distmat)
+PAM <- obtainCommTablePAM()
+PAM_filtered <- filteredCommunities(PAM, distmat)
+HC <- obtainCommTableHC()
+HC_filtered <- filteredCommunities(HC,distmat)
+CL <- obtainCommTableCL()
+CL_filtered <- filteredCommunities(CL,distmat)
+FCM <- obtainCommTableFCM()
+FCM_filtered <- filteredCommunities(FCM, distmat)
+
+#Heatmap for non-filtered communities
+heatmaps_algorithm(AP,MCL,PAM,HC,CL, FCM, "ATCcodes",4,TRUE,"heatmap_ATC_nonfiltered")
+heatmaps_algorithm(AP,MCL,PAM,HC,CL, FCM, "MoA",4,TRUE,"heatmap_MoA_nonfiltered")
+
+#Heatmap for filtered communities
+heatmaps_algorithm(AP_filtered,MCL_filtered,PAM_filtered,HC_filtered,CL_filtered, FCM_filtered, "ATCcodes",4,TRUE,"heatmap_ATC_filtered")
+heatmaps_algorithm(AP_filtered,MCL_filtered,PAM_filtered,HC_filtered,CL_filtered, FCM_filtered, "MoA",4,TRUE,"heatmap_MoA_filtered")
+
+```
+
+We can also observe the distribution across the cluster sizes between the different clustering algorithms.
+
+```{r}
+distribution_table <- function(communities,algorithm){
+  breaks <- c(2,5,10,15,20,25,50,100)
+  categories <- c("2-4","5-9","10-14","15-19","20-24","25-49","50-99","+100")
+  df <- data.frame(algorithm=rep(algorithm,8),Category=categories,Frequency=numeric(8))
+  for (i in c(1:(length(breaks)-1))){
+    df$Frequency[i] <- length(which(table(communities$Community_ID)>=breaks[i] & table(communities$Community_ID)<breaks[i+1]))
+  }
+  df$Frequency[i+1] <- length(which(table(communities$Community_ID)>=breaks[i+1]))
+  return(df)
+}
+
+distAP <- distribution_table(AP,"AP")
+distHC <- distribution_table(HC,"HC")
+distMCL <- distribution_table(MCL,"MCL")
+distPAM <- distribution_table(PAM,"PAM")
+distCL <- distribution_table(CL,"CL1")
+distFCM <- distribution_table(FCM, 'FCM')
+distributions <- rbind(distAP,distHC,distMCL,distPAM,distCL, distFCM)
+
+categories=c("2-4","5-9","10-14","15-19","20-24","25-49","50-99","+100")
+
+ggplot(distributions, aes(x=Category,y=Frequency, fill=algorithm)) +
+  geom_bar(stat="identity",position=position_dodge())+
+  colfillScale+ 
+  scale_x_discrete(limits = categories)+
+  labs(x="Number of Drugs",y="Frequency of clusters",fill="")
+ggsave("Data/Results/ComparisonDistributionAllFiltered.pdf")
+
+```
+
+Finally, we compare the enrichment clusters obtained from random clusters and with the communities obtained from CMap.
+
+```{r}
+##REVISE THIS
+HC_filtered$K <- HC_nf$K
+MCL_filtered$K <- MCL_nf$K
+PAM_filtered$K <- PAM_nf$K
+AP_filtered$K <- AP_nf$K
+ClONE_filtered$K <- ClONE_nf$K
+FCM_filtered$K <- FCM_nf$K
+
+randAP <- tidyclusters("","AP")
+randHC <- tidyclusters("","HC")
+randMCL <- tidyclusters("","MCL")
+randPAM <- tidyclusters("","PAM")
+randFCM <- tidyclusters('', 'FCM')
+randClONE <- tidyclusters("","ClONE")
+random <- rbind(randAP,randHC,randMCL,randPAM,randClONE, randFCM)
+random$random <- TRUE
+
+#Remove unnecessary columns from partition tables
+algorithm_nf <- algorithm_nf[,c("K","EnrichedClusters","Percentage","EnrichedClustersDT","PercentageDT","Pval_ATC","Pval_DT","algorithm")]
+algorithm_filtered <- algorithm_filtered[,c("K","EnrichedClusters","Percentage","EnrichedClustersDT","PercentageDT","Pval_ATC","Pval_DT","algorithm")]
+
+algorithm_nf$random <- FALSE
+algorithm_filtered$random <- FALSE
+
+#join evertyhing
+ATC_3 <- rbind(algorithm_nf,random)
+ATC_3_filtered <- rbind(algorithm_filtered,random)
+
+compareEnrichedClustersRandom <- function(algorithm,comparison,ylab){
+  if(comparison =="ATC"){
+  subset <- algorithm[,c("K","EnrichedClusters","algorithm","random")]}
+  else if (comparison == "DT"){
+    subset<- algorithm[,c("K","EnrichedClustersDT","algorithm","random")] 
+  }
+  subset <- melt(subset,id=c("algorithm","K","random"))
+  p <- ggplot(data=subset, aes(x=K, y=value,shape=random,colour=algorithm))+
+    geom_line(size=1.3,aes(linetype=random, color=algorithm))+
+    labs(x="Number of Clusters",y = ylab)+
+    labs(colour = "",linetype="")+
+    xlim(0,400)+
+    colScale+ 
+    geom_vline(xintercept=106,linetype="dashed")+
+    guides(linetype=FALSE)
+  return(p)
+}
+
+highPerc <- sapply(c("HC","AP","PAM","ClONE","MCL", 'FCM'),function(algorithm){
+  alg_subset <- algorithm_nf[which(algorithm_nf$algorithm==alg & algorithm_nf$random==FALSE),]
+  return(list(K_ATC=alg_subset$K[which.max(alg_subset$Percentage)],Enr_ATC=alg_subset$EnrichedClusters[which.max(alg_subset$Percentage)], K_DT=alg_subset$K[which.max(alg_subset$PercentageDT)],Enr_DT=alg_subset$EnrichedClustersDT[which.max(alg_subset$PercentageDT)]))
+})
+
+p1 <- compareEnrichedClustersRandom(ATC_3,"ATC","Enriched Clusters (ATC -3rd level)")+ scale_y_continuous(breaks=seq(0,50,10))
+p2 <- compareEnrichedClustersRandom(ATC_3,"DT","Enriched Clusters (MoA)")
+g <- grid.arrange(p1,p2,ncol=2)
+ggsave("Data/Results/ComparisonATC_3_nonfiltered_random.pdf",g,width=20,height=12,units = "cm")
+
+p3 <- compareEnrichedClustersRandom(ATC_3_filtered,"EnrichedClusters","Enriched Clusters (ATC -3rd level)")
+p4 <- compareEnrichedClustersRandom(ATC_3_filtered,"EnrichedClustersDT","Enriched Clusters (MoA)")
+g <- grid.arrange(p3,p4,ncol=2)
+ggsave("Data/Results/ComparisonATC_3_filtered.png",g,width=20,height=12,units = "cm")
+
+ATC_3$Pval_ATC=-log(aTC_3$Pval_ATC)
+ATC_3$Pval_DT=-log(ATC_3$Pval_DT)
+p3 <- compareEnrichedClustersRandom(ATC_3,"Pval_ATC","-log(pval ATC)")
+p4 <- compareEnrichedClustersRandom(ATC_3,"Pval_DT","-log(pval MoA)")
+grid.arrange(p3,p4,ncol=2)
+
+```
+
