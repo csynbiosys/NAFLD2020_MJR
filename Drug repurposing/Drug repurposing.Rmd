@@ -808,7 +808,7 @@ enrichedclustersFCM <- function(i,signific,level,filtered){
 
 ```
 
-WAll these clusters will be compared with a random cluster.
+All these clusters will be compared with a random cluster.
 
 ```{r}
 enrichedRandomAP <- function(p,signific,level,filtered){
@@ -1044,8 +1044,6 @@ tidyclusters <- function(filename,algorithm){
 ```
 
 We retrieve the information from the results obtained before.
-
-FIGURE OUT HOW TO PLOT INTERNAL MEASURES.
 
 ```{r}
 HC_nf <- tidyclusters('', 'HC') #The file will go in the parenthesis

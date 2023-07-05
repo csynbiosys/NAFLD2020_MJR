@@ -1,6 +1,7 @@
 library(edgeR)
 
-de_analysis <- function(dgList, group_var = "group", blocking_vars = c(), contrast_name, print =TRUE){
+#Create function to perform differential gene expression where the chosen differentially expressed genes have a FDR < 0.05 and |fold-change| >=2. The output is a list that contains the main objects of the analysis, as well as the genes that meet the criteria.
+dea_edgeR <- function(dgList, group_var = "group", blocking_vars = c(), contrast_name, print =TRUE){
   fc_threshold <- 2
   fdr_threshold <- 0.05
   formula <- paste(c('~0', c(group_var, blocking_vars)), collapse = ' + ' ) # create the formula for he experimental design
@@ -22,6 +23,6 @@ de_analysis <- function(dgList, group_var = "group", blocking_vars = c(), contra
     diffexp_genes = de_genes, 
     contrast_matrix = contrast_matrix, 
     design = design,
-    de = de
+    de = de_genes
   ) 
 }
