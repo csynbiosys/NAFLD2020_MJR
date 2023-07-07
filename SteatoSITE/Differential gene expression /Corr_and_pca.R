@@ -6,7 +6,7 @@ library(RColorBrewer)
 
 load("./SteatoSITE/DGE_and_GSEA.R")
 feature_counts <- read.csv("./Data/Clean_counts.csv", stringsAsFactors = FALSE, row.names = 1)
-path_metadata <- read.csv("./Data/Path_metadata.csv", stringsAsFactors = FALSE, row.names =1, header = TRUE)
+path_metadata <- read.csv("/Users/mariajimenezramos/Library/CloudStorage/OneDrive-UniversityofEdinburgh/PhD/Third year/SteatoSITE/path_metadata_final_complete_rnaseq.csv", stringsAsFactors = FALSE, row.names =1, header = TRUE)
 
 
 #CORRELATIONS BETWEEN VARIABLES
@@ -16,11 +16,11 @@ path_copy <- as.data.frame(lapply(path_copy, as.factor))
 path_copy <- as.data.frame(lapply(path_copy, as.numeric))
 
 ##Change colnames to a presentable format
-colnames(path_copy) <- c("sample_id", "nash_diagnosis", "Hepatocyte ballooning", "Steatosis", "Lobular inflammation", "Modified Ishak score", "Kleiner fibrosis sep", "Age", "Sex", "Status", "Diabetes","BMI", "Kleiner fibrosis", "NAFLD", "NAS", "NAS scores", "Mapped reads", "% mapped reads",  "Dup PCR rate per gene", "rs738409", "rs62305723", "rRNA", "Specimen type", "Specimen date", "Health board", "Sections cut", "Curls cut", "Batch no.", "Year")
+colnames(path_copy) <- c("sample_id", "nash_diagnosis", "Hepatocyte ballooning", "Steatosis", "Lobular inflammation", "Modified Ishak score", "Kleiner fibrosis sep", "Age", "Sex", "Status", "Diabetes","BMI", "Kleiner fibrosis", "NAFLD", "NAS", "NAS scores", "Mapped reads", "Dup PCR rate per gene", "% mapped reads", "rs62305723",  "rs738409", "rRNA", "Specimen type", "Specimen date", "Health board", "Sections cut", "Curls cut", "Batch no.")
 
 ##Obtain correlation matrix with pvaluesfor the differen9t variables.
-correlation_matrix <- cor(path_copy[, 3:ncol(path_copy)], use = "complete.obs") #NA values are not taken into account when performing correlation.
-cor_pmat <- cor_pmat(path_copy[, 3:ncol(path_copy)])
+correlation_matrix <- cor(path_copy[, c(3:5, 8:9, 11:13, 16:ncol(path_copy))], use = "complete.obs") #NA values are not taken into account when performing correlation.
+cor_pmat <- cor_pmat(path_copy[, c(3:5, 8:9, 11:13, 16:ncol(path_copy))])
 #Plot correlations with p-values.
 ggcorrplot(correlation_matrix, type = 'lower', lab = TRUE, p.mat = cor_pmat, insig = 'blank', method = "circle", lab_size = 3, outline.color = "white")
 
