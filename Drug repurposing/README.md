@@ -1,0 +1,1 @@
+This folder contains the code to collapse the drug profiles available in clue.io into PRLs, and obtain suitable compounds in silico using disease profiles from each stage of MASLD using the code retrieved from DvD package.
